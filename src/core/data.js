@@ -28,11 +28,18 @@
  * detection, and one automatic re-attach + retry on a fresh CDP session.
  */
 import { evaluate, evaluateAsync, KNOWN_PATHS } from '../connection.js';
+import { waitForChartReady } from '../wait.js';
 
 const MAX_OHLCV_BARS = 500;
 const MAX_TRADES = 20;
 const CHART_API = KNOWN_PATHS.chartApi;
 const BARS_PATH = KNOWN_PATHS.mainSeriesBars;
+
+// Quote_get must switch chart AND restore within the 15s tool budget. Using
+// chart.setSymbol's default 10s wait would blow the budget on a double switch.
+// 5s is enough for a successful switch (typical ~1-2s) and short enough that
+// the full switch+read+restore fits within 15s even when TV routes slowly.
+const QUOTE_SWITCH_TIMEOUT_MS = 5000;
 
 function buildGraphicsJS(collectionName, mapKey, filter) {
   return `
@@ -268,12 +275,19 @@ export async function getEquity() {
   return { success: true, data_points: equity?.data?.length || 0, source: equity?.source, data: equity?.data || [], equity_summary: equity?.equity_summary, note: equity?.note, error: equity?.error };
 }
 
-export async function getQuote({ symbol } = {}) {
-  const data = await evaluate(`
+/**
+ * Read a quote snapshot for whatever symbol is currently on the active chart.
+ * Returns the raw quote object — success wrapping is the caller's job.
+ *
+ * This is the inner half of getQuote(). Callers that need a specific symbol
+ * must switch the chart first (see getQuote below).
+ */
+async function readQuoteFromActiveChart() {
+  return await evaluate(`
     (function() {
       var api = ${CHART_API};
-      var sym = '${symbol || ''}';
-      if (!sym) { try { sym = api.symbol(); } catch(e) {} }
+      var sym = '';
+      try { sym = api.symbol(); } catch(e) {}
       if (!sym) { try { sym = api.symbolExt().symbol; } catch(e) {} }
       var ext = {};
       try { ext = api.symbolExt() || {}; } catch(e) {}
@@ -296,11 +310,128 @@ export async function getQuote({ symbol } = {}) {
       if (ext.description) quote.description = ext.description;
       if (ext.exchange) quote.exchange = ext.exchange;
       if (ext.type) quote.type = ext.type;
+      if (ext.full_name) quote.full_name = ext.full_name;
       return quote;
     })()
   `);
-  if (!data || (!data.last && !data.close)) throw new Error('Could not retrieve quote. The chart may still be loading.');
-  return { success: true, ...data };
+}
+
+/**
+ * Compare symbol strings by BASE symbol only (the part after the exchange
+ * colon). TradingView auto-routes between exchanges — requesting NASDAQ:AAPL
+ * may legitimately resolve to BATS:AAPL because that's TV's preferred feed
+ * for retail. We still got AAPL data, which is what the user asked for.
+ *
+ * The Claude Desktop 2026-04-23 bug was a BASE-symbol mismatch: requested
+ * BHP but chart showed SLV. Base-symbol comparison catches that while
+ * tolerating TV's routing.
+ */
+function baseSymbolsEqual(a, b) {
+  if (!a || !b) return false;
+  const base = s => {
+    const upper = String(s).trim().toUpperCase();
+    return upper.includes(':') ? upper.split(':').pop() : upper;
+  };
+  return base(a) === base(b);
+}
+
+/**
+ * Switch the chart to `symbol` and wait up to `timeoutMs` for bars to stabilise.
+ * Returns the ready flag from waitForChartReady (false if the switch didn't
+ * complete in time — caller should decide how to react).
+ */
+async function quickSwitchSymbol(symbol, timeoutMs = QUOTE_SWITCH_TIMEOUT_MS) {
+  await evaluateAsync(`
+    (function() {
+      var chart = ${CHART_API};
+      return new Promise(function(resolve) {
+        chart.setSymbol('${symbol.replace(/'/g, "\\'")}', {});
+        setTimeout(resolve, 300);
+      });
+    })()
+  `);
+  return await waitForChartReady(symbol, null, timeoutMs);
+}
+
+/**
+ * PRD §3.1 — quote_get must honour the `symbol` arg.
+ *
+ * Previously getQuote() read from whatever was on the chart and relabelled
+ * the output with the requested symbol, so a chart sitting on BATS:SLV
+ * returning `{ symbol: "ASX:BHP", description: "iShares Silver Trust" }`
+ * looked authoritative to the LLM client and was silently wrong.
+ *
+ * Fix: if `symbol` is supplied and differs from the active chart symbol,
+ * temporarily switch the chart (via core.chart.setSymbol → waitForChartReady),
+ * read the quote, then restore the original symbol in a finally block so the
+ * user's chart is left exactly as they had it. If `symbol` matches the chart
+ * (or is omitted) we read directly — no disruption.
+ *
+ * A non-disruptive per-symbol quote path may be wired in later if TV exposes
+ * one (see docs/watchlist-scout.md), but the temp-switch is the correct
+ * baseline: it GUARANTEES the returned metadata (description/exchange/type)
+ * matches the requested symbol.
+ */
+export async function getQuote({ symbol } = {}) {
+  const requested = symbol ? String(symbol).trim() : '';
+
+  // Read current chart symbol cheaply (public facade call, not ._chartWidget).
+  const currentSymbol = await evaluate(`
+    (function() {
+      try { return ${CHART_API}.symbol(); } catch(e) { return null; }
+    })()
+  `);
+
+  const needsSwitch = !!requested && !baseSymbolsEqual(requested, currentSymbol);
+
+  if (needsSwitch) {
+    try {
+      await quickSwitchSymbol(requested);
+    } catch (err) {
+      throw new Error(`quote_get: failed to switch chart to ${requested}: ${err.message}`);
+    }
+  }
+
+  try {
+    const data = await readQuoteFromActiveChart();
+    if (!data || (!data.last && !data.close)) {
+      throw new Error(
+        `Could not retrieve quote for ${requested || currentSymbol}. ` +
+        `The chart may still be loading.`,
+      );
+    }
+
+    // Hard guard: if we asked for a specific symbol and the chart resolved to
+    // a DIFFERENT base symbol (e.g. requested BHP but chart is on SLV), throw
+    // rather than return wrong data. Exchange differences (NASDAQ→BATS) are
+    // tolerated because that's TV auto-routing, not a bug.
+    if (requested && data.symbol && !baseSymbolsEqual(requested, data.symbol)) {
+      throw new Error(
+        `quote_get: requested ${requested} but chart resolved to ${data.symbol}. ` +
+        `Symbol may be invalid or rejected by TradingView.`,
+      );
+    }
+
+    const result = { success: true, ...data };
+    if (requested) result.requested_symbol = requested;
+    if (needsSwitch) result.chart_switched = true;
+    return result;
+  } finally {
+    if (needsSwitch && currentSymbol) {
+      try {
+        await quickSwitchSymbol(currentSymbol);
+      } catch (err) {
+        // Can't surface this without masking the primary result. Log to stderr
+        // (MCP stdio stays clean) so the user knows their chart may be on the
+        // wrong symbol. Rare — if setSymbol succeeded once, the restore almost
+        // always succeeds too.
+        process.stderr.write(
+          `[quote_get] WARNING: failed to restore chart from ${requested} to ` +
+          `${currentSymbol}: ${err.message}\n`,
+        );
+      }
+    }
+  }
 }
 
 export async function getDepth() {

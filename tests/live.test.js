@@ -167,17 +167,63 @@ describe('Section 3.1 — quote_get', { skip: liveSkip }, () => {
       `elapsed ${elapsed}ms should be within the 15s PRD budget`);
   });
 
+  it('actually switches the chart when a different symbol is requested (PRD §3.1)', async () => {
+    // Regression test for the Claude Desktop 2026-04-23 feedback: quote_get
+    // was silently returning current-chart data labelled with the requested
+    // symbol (e.g. asking for ASX:BHP while chart was BATS:SLV returned
+    // description: "iShares Silver Trust"). After the fix the tool must
+    // temporarily switch the chart to the requested symbol, read the quote,
+    // and restore the original symbol.
+    const { getQuote } = await import('../src/core/data.js');
+    const { getState } = await import('../src/core/chart.js');
+
+    const baseOf = s => (s || '').toUpperCase().split(':').pop();
+
+    const before = await getState();
+    const originalSymbol = before.symbol;
+    const originalBase = baseOf(originalSymbol);
+
+    // Pick a base symbol that is DEFINITELY different from whatever the chart
+    // is on — we need the base to differ, not just the exchange, otherwise we
+    // can't tell whether the switch happened or TV just re-routed.
+    const testSymbol = originalBase === 'AAPL' ? 'NASDAQ:MSFT' : 'NASDAQ:AAPL';
+    const testBase = baseOf(testSymbol);
+
+    const t = Date.now();
+    const r = await getQuote({ symbol: testSymbol });
+    const elapsed = Date.now() - t;
+
+    assert.equal(r.success, true);
+    // Budget: two quick-switches at 5s timeout + read = well under 15s
+    assert.ok(elapsed < 15000,
+      `elapsed ${elapsed}ms should be <15s (two chart switches at 5s timeout each)`);
+
+    // The response MUST describe the REQUESTED base symbol, not the original
+    // chart's symbol. Exchange prefix may differ (TV re-routes AAPL to BATS
+    // even when we asked for NASDAQ) — we compare the base symbol only.
+    assert.ok(r.symbol, 'response should carry a symbol field');
+    assert.equal(baseOf(r.symbol), testBase,
+      `returned symbol base "${baseOf(r.symbol)}" should match requested base "${testBase}" ` +
+      `(full returned: ${r.symbol})`);
+    assert.equal(r.chart_switched, true, 'chart_switched flag must be true when a switch occurred');
+
+    // Chart must be restored to the original base symbol after the call.
+    const after = await getState();
+    assert.equal(baseOf(after.symbol), originalBase,
+      `chart should be restored to ${originalSymbol} (was ${after.symbol})`);
+  });
+
   it('does not hang when an unknown symbol arg is supplied (anti-hang regression test)', async () => {
-    // PRE-EXISTING LIMITATION: the current implementation does not actually
-    // switch symbols when the `symbol` argument is passed — it reads the
-    // current chart's bars and labels them with whatever symbol was requested.
-    // That is a quality-of-implementation issue in core.getQuote (not the
-    // transport layer we just hardened). The PRD Section 2 acceptance
-    // criterion that matters here is anti-hang — the tool must complete
-    // within 15s on any input, not hang for 4 minutes. We verify only that.
+    // PRD §2.1/§3.1: bogus symbol must fail fast, not hang for 4 minutes.
+    // After the §3.1 fix it will throw via setSymbol+waitForChartReady within
+    // ~10s — we only assert "did not hang" here.
     const { getQuote } = await import('../src/core/data.js');
     const t = Date.now();
-    await getQuote({ symbol: 'NOSUCH_EXCHANGE:TOTALLY_FAKE' });
+    try {
+      await getQuote({ symbol: 'NOSUCH_EXCHANGE:TOTALLY_FAKE' });
+    } catch {
+      // Expected — unknown symbol should throw, not hang.
+    }
     const elapsed = Date.now() - t;
     assert.ok(elapsed < 15000, `must not hang — elapsed ${elapsed}ms`);
   });

@@ -1,19 +1,17 @@
 # Session resume — TradingView MCP darkice
 
-**Last active:** 2026-04-22 ~20:17 AEDT
+**Last active:** 2026-04-23 ~07:10 AEDT
 **Working directory:** `/Users/mattcrombie/Dev/Projects/mcp-servers/tradingview-mcp-darkice`
-**Branch:** `main` (no commits yet — everything below is uncommitted)
-**Driver document:** `PRD.md` (read this first if context is fresh)
+**Branch:** `main` — committed through `a508fcd` (Section 4 watchlist suite)
+**Driver document:** `PRD.md`
 
 ---
 
 ## TL;DR — where to pick up
 
-PRD Sections 2 (infrastructure) and 3 (data tool verification) are **complete and tested — not committed**. PRD Section 4 (the 8-tool watchlist suite) has not started. The right next move is:
+PRD Sections 2, 3, and **4** are all complete and **committed**. The 8-tool watchlist suite landed this session, along with the Claude Desktop test-feedback items: `quote_get` symbol-param bug is fixed (real temp-switch, not a mislabel), and `docs/timeout-evidence.md` gives the human tester concrete evidence that §2.1/§2.4/§2.6/§3.4 fire correctly.
 
-1. `git status` + skim `resume.md` (this file).
-2. Decide: **commit the Section 2+3 work first** (recommended), then start Section 4.
-3. Start Section 4 with a scout agent (architecture probe: REST vs UI, see PRD §4.1).
+The natural next move is the **24-watchlist UPSERT** (PRD §5.2) — now unblocked.
 
 ---
 
@@ -21,205 +19,208 @@ PRD Sections 2 (infrastructure) and 3 (data tool verification) are **complete an
 
 | PRD Section | Status | Tests | Notes |
 |---|---|---|---|
-| 2.1 global timeout utility | ✅ done | 9 unit | `src/utils/timeout.js` |
-| 2.2 shared async dep audit + transport hardening | ✅ done | covered by live regression | `src/connection.js` per-call sub-timeout, stale-client retry |
-| 2.3 enhanced tier-2 health check | ✅ done | 2 live | `src/core/health.js#healthCheck` |
-| 2.4 withRetry decorator | ✅ done | 6 unit | `src/utils/retry.js` wraps 8 data handlers |
-| 2.5 ui_open_panel watchlist fix | ✅ done | 4 live | `src/core/ui.js` — `data-name="base"` |
-| 2.6 tv_launch poll + clear error | ✅ done | 5 unit (source-level) | `src/core/health.js#launch` |
-| 3.1 quote_get verification | ✅ done | 2 live | |
+| 2.1 global timeout utility | ✅ done, committed `f420a8f` | 9 unit | `src/utils/timeout.js` |
+| 2.2 shared async dep audit + transport hardening | ✅ done, committed `4a4d798` | covered live | `src/connection.js` per-call sub-timeout, stale-client retry |
+| 2.3 enhanced tier-2 health check | ✅ done, committed `8af86b4` | 2 live | `src/core/health.js#healthCheck` |
+| 2.4 withRetry decorator | ✅ done, committed `f420a8f` | 6 unit | `src/utils/retry.js` wraps 8 data handlers |
+| 2.5 ui_open_panel watchlist fix | ✅ done, committed `ccbadcc` | 4 live | `src/core/ui.js` — `data-name="base"` |
+| 2.6 tv_launch poll + clear error | ✅ done, committed `8af86b4` | 5 unit (source-level) | `src/core/health.js#launch` |
+| **3.1 quote_get symbol-param fix** | ✅ **FIXED 2026-04-23**, committed `ffeb5fe` | 3 live (1 gated) | temp-switch-and-restore pattern |
 | 3.2 data_get_ohlcv verification | ✅ done | 2 live | |
 | 3.3 data_get_study_values verification | ✅ done | 1 live | |
 | 3.4 batch_run verification | ✅ done | 1 live (gated) | disruptive — env-gated |
-| **4.1–4.4 watchlist suite (8 new tools)** | ❌ not started | — | see "Open work" below |
-| 5 testing requirements | 🟡 partial | phase 1–2 covered; phase 3 (write-path) blocked on §4 | |
-| 6 code organisation | 🟡 followed for new files | — | |
+| **4.1 REST vs UI decision** | ✅ scouted, committed `7d2259f` | — | UI automation — no REST reachable |
+| **4.2 + 4.3 watchlist suite (8 tools)** | ✅ done, committed `a508fcd` | 7 live (2 read, 5 gated write) | `src/core/watchlist.js` grew to 898 lines |
+| 4.4 symbol handling (numeric-prefix ASX) | ✅ done | covered by add test | report rejection, don't abort |
+| 5.1 manual test script phases 1-3 | ✅ encoded as live tests | — | 7 watchlist live tests |
+| 5.2 24-watchlist UPSERT end-to-end | 🟡 unblocked, not run | — | **next logical step** |
+| 6 code organisation | 🟡 flat (not nested) | — | scale-dependent — refactor later if needed |
 
 ---
 
-## Uncommitted changes
-
-Run `git status` to see current state. At snapshot time:
+## Commits this session (newest first)
 
 ```
- M package.json                   (new test:* scripts)
- M src/connection.js              (transport hardening — §2.2)
- M src/core/data.js               (root-cause doc comment — §2.2)
- M src/core/health.js             (tier-2 probe §2.3 + launch rewrite §2.6)
- M src/core/ui.js                 (watchlist selector fix §2.5)
- M src/server.js                  (startup banner shows timeout values — §2.1)
- M src/tools/batch.js             (scaled timeout budget — §2.1)
- M src/tools/data.js              (withToolTimeout + withRetry wraps — §2.1/§2.4)
- M src/tools/health.js            (withLaunchTimeout — §2.1)
-?? PRD.md                         (source of truth for this whole effort)
-?? src/utils/                     (NEW — timeout.js + retry.js)
-?? tests/live.test.js             (NEW — §2.3, §2.5, §3.1–§3.4)
-?? tests/section2-unit.test.js    (NEW — §2.1, §2.4, §2.6 unit tests)
+a508fcd Add 8-tool watchlist management suite — PRD §4
+7d2259f Add watchlist architecture scout — PRD §4.1 decision
+8ee4890 Add timeout evidence doc + probe script for tester verification
+ffeb5fe Fix quote_get symbol-param being silently ignored — PRD §3.1
+74f5df1 Add PRD driver doc and session resume doc
+2dafea9 Add tests for PRD §2 and §3 — 31 new tests
+ccbadcc Fix ui_open_panel watchlist selector — PRD §2.5
+8af86b4 Add tier-2 health probe and poll-based tv_launch — PRD §2.3 / §2.6
+4a4d798 Harden CDP transport with sub-timeout + stale-client retry — PRD §2.2
+f420a8f Add global tool timeout + retry wrappers — PRD §2.1 / §2.4
 ```
-
-**Suggested commit plan** (if you want small, reviewable commits):
-
-```
-git add src/utils/timeout.js src/server.js src/tools/data.js src/tools/batch.js src/tools/health.js
-git commit -m "Section 2.1: global tool timeout utility with env-var config"
-
-git add src/connection.js src/core/data.js
-git commit -m "Section 2.2: CDP transport sub-timeout + stale-client auto-reattach"
-
-git add src/core/health.js
-git commit -m "Section 2.3+2.6: tier-2 health probe and tv_launch poll hardening"
-
-git add src/utils/retry.js src/tools/data.js   # retry uses src/tools/data.js too — if already staged, just add retry.js
-git commit -m "Section 2.4: explicit withRetry decorator at tool-handler layer"
-
-git add src/core/ui.js
-git commit -m "Section 2.5: fix ui_open_panel watchlist selector (data-name=base)"
-
-git add tests/section2-unit.test.js tests/live.test.js package.json
-git commit -m "Tests for PRD Section 2 + 3 — 31 new tests, all passing"
-
-git add PRD.md resume.md
-git commit -m "Add PRD and session resume doc"
-```
-
-(`git stash` is blocked on this machine for safety — commit first before any stash ops.)
 
 ---
 
-## How to verify current state after restarting
+## Uncommitted items
+
+```
+?? .claude/                    # local settings — intentional, don't commit
+?? scripts/probe-*.js          # 17 scout probe artefacts — safe to delete
+```
+
+The `scripts/probe-*.js` files were the scout's reproduction artefacts (see `docs/watchlist-scout.md` §Probe artefacts). The implementation agent wrote and deleted its own. If you don't want them cluttering the tree, `rm scripts/probe-*.js` is safe — all findings are captured in the scout doc.
+
+---
+
+## How to verify current state
 
 ```bash
 cd /Users/mattcrombie/Dev/Projects/mcp-servers/tradingview-mcp-darkice
-npm run test:unit      # 54 tests, no TV required
-npm run test:live      # 11 tests, needs TV running
-npm run test:all       # 139 total (2 pre-existing e2e failures — see below)
+
+npm run test:unit           # 49 tests, no TV required
+node scripts/probe-timeout.js   # §2.1/§2.4 evidence probe, no TV required
+npm run test:live           # 11 tests, needs TV running (panel + read-only)
+
+# Disruptive (with TV running) — includes chart-switch and watchlist mutations.
+# Mutations are confined to __TEST_LIST__ and restore the user's originally-selected list.
+TV_MCP_ALLOW_DISRUPTIVE_TESTS=1 npm run test:live
 ```
 
-**Expected result:** 137/139 pass. The 2 known pre-existing failures in `tests/e2e.test.js` are:
+**Expected disruptive result:** 7 Section 4 tests pass + 1 quote_get symbol-switch test pass + 1 batch_run test pass = 9 write-path tests green. Whether the non-gated tests pass depends on the chart's starting state (chart must be on a liquid symbol with bars loaded — if TV is stuck on BATS:SLV or similar with no bars, 4 pre-existing non-watchlist tests will fail on "Could not extract OHLCV data").
 
-1. `ui_open_panel — open/close pine-editor` (line 1042) — calls `window.TradingView.bottomWidgetBar.hideWidget('pine-editor')` directly. TV removed that method from the `bottomWidgetBar` API in a recent version. **Not in our scope.** To fix: the test needs to exercise `core.openPanel` instead (already works — our new `tests/live.test.js` has 4 passing panel tests).
-2. `replay_stop — return to realtime` (line 1237) — test state pollution. A prior test left TV replay in a state where `stopReplay()` throws "Replay is not started". **Not in our scope.** To fix: either reorder the test or guard with `try/catch`.
+### Pre-existing unrelated failures in `npm run test:all`
 
----
-
-## Live test context / safety notes
-
-- **TradingView Desktop** is expected to be running on `localhost:9222` for `tests/live.test.js`. Last session chart was `ASX_DLY:STO`, 60-min resolution.
-- **Disruptive tests are gated.** `tests/live.test.js` includes a `Section 3.4 batch_run` test that navigates the chart. It is skipped by default. Enable with `TV_MCP_ALLOW_DISRUPTIVE_TESTS=1 npm run test:live`. It restores original symbol + timeframe in `after()`.
-- **DO NOT run `core.launch()` or `tv_launch` directly** while your live TV session is active — default `kill_existing: true` will kill your chart and destroy the test context. Section 2.6's verification is source-level only for this reason.
+- `tests/e2e.test.js::ui_open_panel — open/close pine-editor` — TV removed `bottomWidgetBar.hideWidget`. Not in scope.
+- `tests/e2e.test.js::replay_stop — return to realtime` — test-state pollution. Not in scope.
 
 ---
 
-## Environment variables introduced
+## Live test chart state — operational note
+
+The live/disruptive tests read OHLCV from whatever chart TV is currently showing. If the chart is on a low-liquidity symbol with no bars loaded, `data_get_ohlcv` and `quote_get` (no-arg form) will error with "Could not extract OHLCV data. The chart may still be loading."
+
+**Before running the disruptive suite:** point TV at something liquid. E.g. via a live MCP call:
+
+```
+chart_set_symbol({ symbol: 'ASX_DLY:STO' })   # or AAPL, SPY, NQ1!, anything with continuous bars
+chart_set_timeframe({ timeframe: '1D' })
+```
+
+The `quote_get` symbol-switch test will work regardless of starting state — it explicitly chooses a non-matching test symbol and restores.
+
+---
+
+## Environment variables
 
 | Env var | Default | Effect |
 |---|---|---|
 | `TV_MCP_TOOL_TIMEOUT_MS` | 15000 | Budget for any CDP-dependent tool handler |
 | `TV_MCP_LAUNCH_TIMEOUT_MS` | 30000 | Budget specifically for `tv_launch` |
 | `TV_MCP_EVAL_TIMEOUT_MS` | 10000 | Per-CDP-evaluate sub-timeout inside `connection.js` |
-| `TV_MCP_ALLOW_DISRUPTIVE_TESTS` | `0` (unset) | Set to `1` to enable chart-navigating tests |
-
-Startup banner prints the first two (stderr, doesn't interfere with MCP stdio).
+| `TV_MCP_ALLOW_DISRUPTIVE_TESTS` | `0` (unset) | Set to `1` to enable chart-navigating + watchlist-mutating tests |
 
 ---
 
-## MCP client configs — already pointed at this repo
+## MCP client configs — pointed at this repo
 
-Done in the previous session:
+Same as previous session:
 
-- **Claude Desktop** (`~/Library/Application Support/Claude/claude_desktop_config.json`):
-  `tradingview` → `node /Users/mattcrombie/Dev/Projects/mcp-servers/tradingview-mcp-darkice/src/server.js`
-  Backup: `claude_desktop_config.json.bak-20260422-165417`
-  **Requires a full Claude Desktop quit+relaunch** for changes to take effect.
-- **Claude Code user scope** (`~/.claude.json`):
-  `tradingview` entry added via `claude mcp add --scope user`.
-  `claude mcp list` → `tradingview: … - ✓ Connected`.
-  Picked up automatically in new Claude Code sessions.
+- **Claude Desktop** — `~/Library/Application Support/Claude/claude_desktop_config.json`. Backup: `claude_desktop_config.json.bak-20260422-165417`.
+- **Claude Code user scope** — `~/.claude.json`. `claude mcp list` → `tradingview: … - ✓ Connected`.
 
-The previous `tradingview-mcp-jackson` path is no longer referenced.
+**⚠️ After this session's commits, Claude Desktop needs a full quit+relaunch** to pick up the 8 new watchlist tools in the manifest.
 
 ---
 
-## Open work — PRD Section 4 (the big one)
+## Addressing Claude Desktop test feedback (2026-04-23) — item-by-item
 
-8 new tools to implement:
+Received that morning: `TradingView MCP — Test Feedback (2026-04-23)`. Response:
 
-- `watchlist_list` — enumerate all watchlists with IDs, names, counts
-- `watchlist_select` — switch active watchlist by name or ID
-- `watchlist_get` — **refactor** existing: auto-open panel, include name + id
-- `watchlist_create` — new watchlist with optional initial symbols
-- `watchlist_add` — **audit + harden** existing: batch support, reject reasons, dedup
-- `watchlist_remove_symbol` — single or batch removal
-- `watchlist_delete` — by name or id, no fuzzy matching
-- `watchlist_rename` — rename watchlist
-- `watchlist_set` — **UPSERT workhorse**: idempotent create-or-update-symbols
-
-### Architectural question (PRD §4.1)
-
-Before implementing: **REST API vs UI automation**. PRD says prefer REST if viable. `window.TV_WATCHLISTS_URL` is present but was observed empty — needs live probing. Fallback is CDP UI automation via DOM + React fiber.
-
-**Recommended first move:** scout-then-dispatch pattern (per the project memory about reference-MCP patterns):
-
-1. **Scout agent** — task: probe live TV for REST endpoints via CDP `Network.enable` + `Network.requestWillBeSent` while clicking around the watchlist UI. Also probe `window.TV_WATCHLISTS_URL`, session cookies, etc. Deliverable: a decision doc recommending REST or UI, with evidence.
-2. **Architecture decision** — PRD says "**Ask me before making any architectural decision not covered by the PRD**". The PRD gives a preference but leaves the final call to the scout's findings. **Pause for user review after the scout before dispatching implementation agents.**
-3. **Implementation agents** — 2–3 parallel developer agents once the architecture is decided. Good decomposition candidates:
-   - Agent A: read-path tools (`watchlist_list`, `watchlist_get`, `watchlist_select`)
-   - Agent B: write-path basic tools (`watchlist_create`, `watchlist_add` refactor, `watchlist_remove_symbol`, `watchlist_delete`, `watchlist_rename`)
-   - Agent C: `watchlist_set` (UPSERT — depends on A + B outputs so must run AFTER them)
-4. **Tests along the way** — extend `tests/live.test.js` with a new describe per tool.
-
-### Known dangerous edge cases (from PRD §4.4)
-
-- Numeric-prefix ASX tickers (`ASX:29M`, `ASX:360`, `ASX:5GG`) may be rejected by TV's symbol lookup. Report rejections, don't abort the batch.
-- CSS class hashes like `__KRxuOy` WILL change between TV versions — never hardcode them. Use `data-name`, `aria-label`, structural selectors.
-- Refuse to operate on watchlists the user didn't ask about (the user has personal watchlists alongside the 24-list ASX source of truth — don't mutate those).
-- `__TEST_LIST__` is the agreed test-list name for manual verification (PRD §5.1).
+| Tester feedback | Status |
+|---|---|
+| ✅ tv_health_check data_pipeline_healthy — already working | confirmed, no change needed |
+| ✅ data_get_ohlcv — already working | confirmed |
+| ✅ data_get_study_values — already working | confirmed |
+| ✅ ui_open_panel watchlist idempotent — already working | confirmed |
+| ✅ watchlist_get opens panel automatically | confirmed (was §2.5 fix) |
+| 🐛 quote_get silently ignores symbol param | **FIXED** (commit `ffeb5fe`, temp-switch pattern, 3 live tests) |
+| ❌ 8-tool watchlist suite missing | **BUILT** (commit `a508fcd`, 7 live tests) |
+| 📋 §2.1 verify timeout fires | `docs/timeout-evidence.md` + `scripts/probe-timeout.js` |
+| 📋 §2.4 verify retry fires | same doc + probe script |
+| 📋 §2.6 verify tv_launch fails within 30s | same doc, 5 source-level unit tests |
+| 📋 §3.4 verify batch_run works | same doc, 1 live gated test |
 
 ---
 
-## Pattern conventions established this run (reference for Section 4 & beyond)
+## What's left (truly) — the 24-watchlist UPSERT
 
-The user said this work is being captured as a reference for another MCP, so these patterns matter:
+PRD §5.2. The 8-tool suite makes this one call per watchlist:
 
-1. **Parallel sub-agent dispatch:** single message with multiple `Agent` tool calls, same tree when file-overlap is zero, worktrees only when overlap is real. Forbid sub-agents from running `npm test` concurrently against shared CDP — orchestrator runs the suite once centrally.
-2. **Sub-agent prompt shape:** scope → files → behaviour → acceptance criteria → work plan → do-NOT → report-back-with. Tell the agent to embed live probes (CDP DOM, network) to verify PRD claims against current TV before hardcoding selectors.
-3. **Test file split:**
-   - `tests/section*-unit.test.js` — pure unit, goes into `test:unit`.
-   - `tests/live.test.js` — CDP-requiring, gracefully skips via top-level CDP probe + `describe({ skip: … })`, goes into `test:live`. **Must include top-level `after()` that calls `disconnect()`** or node --test hangs forever (see `memory/project_test_cdp_teardown.md`).
-4. **Disruptive tests** — gate behind `TV_MCP_ALLOW_DISRUPTIVE_TESTS=1`. Always restore original chart state in `after()`.
+```js
+for (const { name, symbols } of THE_24_LISTS) {
+  await watchlist_set({ name, symbols });
+}
+```
+
+- Expected happy-path result: ~24 × ~15s = ~6 minutes wall clock.
+- Numeric-prefix ASX tickers (`ASX:29M`, `ASX:360`, `ASX:5GG`) will land in `rejected` for each call they appear in. `watchlist_add` already handles this per-symbol without aborting the batch.
+- Recommend: capture the aggregated rejected set across all 24 calls so you know exactly which symbols TV won't accept, then manually investigate alternatives or document the limitation.
+
+The list of 24 source-of-truth watchlists + their symbols isn't in this repo — the user (or a kickoff prompt) needs to supply them. The tool call pattern is the same regardless.
 
 ---
 
-## File index — what's where
+## Scope-adjacent follow-up — scanner REST quote fast-path
+
+`docs/watchlist-scout.md` found that `POST https://scanner.tradingview.com/global/scan` is unauthenticated and returns per-symbol OHLCV for arbitrary tickers. The current `quote_get` temp-switches the chart to answer — correct but briefly disruptive. A future enhancement could use the scanner endpoint as a fast-path, falling back to temp-switch when scanner returns no data.
+
+Not in scope for today. Logged here for future-you.
+
+---
+
+## Pattern conventions (reference for future work)
+
+1. **Tool registration:** every new tool in `src/tools/*.js` wrapped with
+   `withToolTimeout(withRetry(() => core.fn(args), name), name)` — belt-and-braces timeout + retry.
+2. **Core functions throw on failure.** Never return `{ success: false }` from core. The tool wrap catches and converts to response envelope.
+3. **Tests split:** `tests/section*-unit.test.js` → `test:unit` (CI-safe); `tests/live.test.js` → `test:live` (requires TV, includes mandatory top-level `after()` hook to disconnect CDP, see memory `project_test_cdp_teardown.md`).
+4. **Disruptive tests gated** behind `TV_MCP_ALLOW_DISRUPTIVE_TESTS=1`. Always restore original state in `after()`.
+5. **Selectors:** `data-name`, `aria-label`, `data-symbol-full`, structural parent queries. Never hashed class names like `wrap-IEe5qpW4` — use `[class*="invalid"]` substring matchers if no stable alternative.
+6. **MCP stdio safety:** retry / diagnostic notices go to `process.stderr.write(...)` only. `stdout` is the protocol channel.
+
+---
+
+## File index — current state
 
 ```
 src/
-  connection.js                  ← CDP transport, per-call timeout + retry (§2.2)
+  connection.js                  ← CDP transport (§2.2)
   server.js                      ← MCP registrations + startup banner
+  wait.js                        ← waitForChartReady helper
   utils/
-    timeout.js                   ← NEW — withTimeout + env config (§2.1)
-    retry.js                     ← NEW — withRetry decorator (§2.4)
+    timeout.js                   ← withTimeout + env config (§2.1)
+    retry.js                     ← withRetry decorator (§2.4)
   core/
-    data.js                      ← data tools + §2.2 root-cause header comment
-    health.js                    ← tier-2 probe (§2.3) + launch (§2.6)
+    data.js                      ← data tools + quote_get fix (§3.1)
+    health.js                    ← tier-2 probe + launch (§2.3/§2.6)
     ui.js                        ← openPanel watchlist fix (§2.5)
-    watchlist.js                 ← current (partial) watchlist impl — will be RESTRUCTURED for §4
+    chart.js                     ← setSymbol, setTimeframe, getState
+    watchlist.js                 ← 898 lines — 8-tool suite (§4)
     ...
   tools/
-    data.js                      ← wraps with withToolTimeout + withRetry
+    data.js                      ← wraps withToolTimeout + withRetry
     batch.js                     ← scaled timeout budget
-    health.js                    ← withLaunchTimeout on tv_launch
-    watchlist.js                 ← current (2-tool) impl — will be EXPANDED for §4
+    health.js                    ← withLaunchTimeout
+    watchlist.js                 ← 9 tool registrations
     ...
 
 tests/
-  cli.test.js                    ← existing
-  pine_analyze.test.js           ← existing
-  e2e.test.js                    ← existing (2 known-broken tests, pre-existing)
-  section2-unit.test.js          ← NEW — §2.1, §2.4, §2.6 (20 tests)
-  live.test.js                   ← NEW — §2.3, §2.5, §3.1–§3.4 (11 tests)
+  section2-unit.test.js          ← 20 unit tests for §2.1/§2.4/§2.6
+  live.test.js                   ← 19 live tests total (read-only + gated write)
 
-PRD.md                           ← the spec this whole effort is implementing
+docs/
+  timeout-evidence.md            ← §2.1/§2.4/§2.6/§3.4 tester evidence
+  watchlist-scout.md             ← §4.1 architecture decision + findings
+
+scripts/
+  probe-timeout.js               ← §2.1/§2.4 runnable probe (committed)
+  probe-*.js (17 files)          ← scout artefacts — uncommitted, safe to delete
+
+PRD.md                           ← the spec
 resume.md                        ← this file
 ```
 
@@ -227,13 +228,7 @@ resume.md                        ← this file
 
 ## Memory (~/.claude/projects/…/memory/)
 
-Already saved:
+- `project_reference_work.md` — this work is reference material for another MCP
+- `project_test_cdp_teardown.md` — live test files need top-level `after()` to disconnect CDP singleton
 
-- `project_reference_work.md` — this work is reference material for another MCP project; verbose rationale and polished patterns matter here
-- `project_test_cdp_teardown.md` — live test files need top-level `after()` hook to disconnect CDP singleton, otherwise node --test hangs
-
----
-
-## One small thing that might need attention later
-
-In `src/tools/data.js` the user / linter intentionally set the retry wraps the way they are — don't revert. Notable: `depth_get`, `data_get_strategy_results`, `data_get_trades`, `data_get_equity` are deliberately NOT wrapped in `withRetry` because their "not found" errors are clean application errors, not transport failures.
+Neither needs updating — both patterns still hold.

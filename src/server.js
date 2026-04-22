@@ -15,6 +15,7 @@ import { registerUiTools } from "./tools/ui.js";
 import { registerPaneTools } from "./tools/pane.js";
 import { registerTabTools } from "./tools/tab.js";
 import { registerMorningTools } from "./tools/morning.js";
+import { getToolTimeoutMs, getLaunchTimeoutMs } from "./utils/timeout.js";
 
 const server = new McpServer(
   {
@@ -93,7 +94,10 @@ process.stderr.write(
   "⚠  tradingview-mcp  |  Unofficial tool. Not affiliated with TradingView Inc. or Anthropic.\n",
 );
 process.stderr.write(
-  "   Ensure your usage complies with TradingView's Terms of Use.\n\n",
+  "   Ensure your usage complies with TradingView's Terms of Use.\n",
+);
+process.stderr.write(
+  `   Tool timeout: ${getToolTimeoutMs()}ms (TV_MCP_TOOL_TIMEOUT_MS)  |  Launch timeout: ${getLaunchTimeoutMs()}ms (TV_MCP_LAUNCH_TIMEOUT_MS)\n\n`,
 );
 
 // Start stdio transport

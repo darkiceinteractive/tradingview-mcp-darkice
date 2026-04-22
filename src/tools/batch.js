@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { jsonResult } from './_format.js';
+import { withTimeout, getToolTimeoutMs } from '../utils/timeout.js';
 import * as core from '../core/batch.js';
 
 export function registerBatchTools(server) {
@@ -10,7 +11,11 @@ export function registerBatchTools(server) {
     delay_ms: z.coerce.number().optional().describe('Delay between iterations in ms (default 2000)'),
     ohlcv_count: z.coerce.number().optional().describe('Bar count for get_ohlcv action (default 100)'),
   }, async ({ symbols, timeframes, action, delay_ms, ohlcv_count }) => {
-    try { return jsonResult(await core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count })); }
+    // Batch budget = per-tool timeout × iterations (+ delays), capped at 10 minutes.
+    const iterations = (symbols?.length || 1) * (timeframes?.length || 1);
+    const perIter = getToolTimeoutMs() + (delay_ms ?? 2000);
+    const budgetMs = Math.min(iterations * perIter, 600_000);
+    try { return jsonResult(await withTimeout(core.batchRun({ symbols, timeframes, action, delay_ms, ohlcv_count }), budgetMs, 'batch_run')); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 }

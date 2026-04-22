@@ -167,7 +167,12 @@ describe('Section 3.1 — quote_get', { skip: liveSkip }, () => {
       `elapsed ${elapsed}ms should be within the 15s PRD budget`);
   });
 
-  it('actually switches the chart when a different symbol is requested (PRD §3.1)', async () => {
+  // Disruptive: switches the chart twice (to the test symbol and back). Gated
+  // behind TV_MCP_ALLOW_DISRUPTIVE_TESTS=1 because chart-state pollution from
+  // prior test files in `npm run test:all` can leave TV mid-transition and
+  // makes the capture→restore assertion flaky.
+  it('actually switches the chart when a different symbol is requested (PRD §3.1)',
+     { skip: disruptiveSkip }, async () => {
     // Regression test for the Claude Desktop 2026-04-23 feedback: quote_get
     // was silently returning current-chart data labelled with the requested
     // symbol (e.g. asking for ASX:BHP while chart was BATS:SLV returned

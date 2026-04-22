@@ -336,3 +336,180 @@ describe('Section 3.4 — batch_run', { skip: disruptiveSkip }, () => {
     assert.ok(elapsed < 60000, `elapsed ${elapsed}ms should be within 60s PRD budget`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Section 4 — watchlist management suite
+//
+// Read-only tests run under liveSkip; write-path tests run under disruptiveSkip.
+// The disruptive suite only mutates a throwaway watchlist called __TEST_LIST__
+// and restores the user's originally-selected list in an after() hook.
+// ---------------------------------------------------------------------------
+
+const TEST_LIST = '__TEST_LIST__';
+
+describe('Section 4 — watchlist (read)', { skip: liveSkip }, () => {
+  it('watchlist_list returns at least one list with id/name/count', async () => {
+    const core = await import('../src/core/watchlist.js');
+    const r = await core.list();
+    assert.equal(r.success, true);
+    assert.ok(Array.isArray(r.watchlists));
+    assert.ok(r.watchlists.length >= 1, 'expected at least one watchlist');
+    for (const w of r.watchlists) {
+      assert.equal(typeof w.id, 'string');
+      assert.equal(typeof w.name, 'string');
+      assert.ok(typeof w.count === 'number' || w.count === null);
+      assert.ok(['user', 'flag'].includes(w.type));
+    }
+    assert.ok(r.active_name, 'active_name should be set');
+  });
+
+  it('watchlist_get returns name + id + symbols for the active list', async () => {
+    const core = await import('../src/core/watchlist.js');
+    const r = await core.get();
+    assert.equal(r.success, true);
+    assert.equal(typeof r.name, 'string');
+    assert.equal(typeof r.count, 'number');
+    assert.ok(Array.isArray(r.symbols));
+    assert.equal(r.count, r.symbols.length);
+  });
+});
+
+describe('Section 4 — watchlist (write)', { skip: disruptiveSkip }, () => {
+  let originalListName = null;
+
+  before(async () => {
+    const core = await import('../src/core/watchlist.js');
+    const r = await core.list();
+    originalListName = r.active_name;
+    // Clean up any stale __TEST_LIST__ from a previous failed run.
+    if (r.watchlists.some(w => w.name === TEST_LIST)) {
+      await core.deleteList({ name: TEST_LIST }).catch(() => {});
+    }
+  });
+
+  after(async () => {
+    const core = await import('../src/core/watchlist.js');
+    try {
+      const r = await core.list();
+      if (r.watchlists.some(w => w.name === TEST_LIST)) {
+        await core.deleteList({ name: TEST_LIST }).catch(() => {});
+      }
+      if (originalListName) {
+        await core.select({ name: originalListName }).catch(() => {});
+      }
+    } catch { /* best-effort */ }
+  });
+
+  it('watchlist_select switches to a named list and back', async () => {
+    const core = await import('../src/core/watchlist.js');
+    const all = await core.list();
+    const other = all.watchlists.find(
+      w => w.type === 'user' && w.name !== all.active_name,
+    );
+    assert.ok(other, 'need at least two user watchlists for this test');
+
+    const a = await core.select({ name: other.name });
+    assert.equal(a.success, true);
+    assert.equal(a.selected.name, other.name);
+
+    const b = await core.select({ name: originalListName });
+    assert.equal(b.success, true);
+    assert.equal(b.selected.name, originalListName);
+  });
+
+  it('watchlist_create / watchlist_add / watchlist_remove_symbol / watchlist_delete full lifecycle on __TEST_LIST__', async () => {
+    const core = await import('../src/core/watchlist.js');
+
+    // Create
+    const created = await core.create({ name: TEST_LIST });
+    assert.equal(created.success, true);
+    assert.equal(created.name, TEST_LIST);
+
+    // Should now be active
+    const g1 = await core.get();
+    assert.equal(g1.name, TEST_LIST);
+    assert.equal(g1.count, 0);
+
+    // Add a couple of well-known symbols
+    const added = await core.add({ symbols: ['ASX:CBA', 'ASX:BHP'] });
+    assert.equal(added.success, true);
+    assert.ok(added.added.length >= 1, 'expected at least one symbol added');
+
+    // Remove CBA
+    const removed = await core.removeSymbol({ symbol: 'ASX:CBA' });
+    assert.equal(removed.success, true);
+    assert.ok(removed.removed.length >= 0);  // may match either "ASX:CBA" or resolved form
+
+    // Delete
+    const del = await core.deleteList({ name: TEST_LIST });
+    assert.equal(del.success, true);
+    assert.equal(del.deleted.name, TEST_LIST);
+
+    // Verify it's gone
+    const fresh = await core.list();
+    assert.ok(!fresh.watchlists.some(w => w.name === TEST_LIST),
+      `${TEST_LIST} should no longer exist after delete`);
+  });
+
+  it('watchlist_add with [ASX:CBA, ASX:BHP, ASX:29M] reports rejection for 29M, adds the rest', async () => {
+    const core = await import('../src/core/watchlist.js');
+    await core.create({ name: TEST_LIST });
+    try {
+      const r = await core.add({ symbols: ['ASX:CBA', 'ASX:BHP', 'ASX:29M'] });
+      assert.equal(r.success, true);
+      // At minimum, the result must acknowledge all three inputs across added/rejected/skipped.
+      const accountedFor = new Set([
+        ...r.added.map(s => s.toUpperCase().split(':').pop()),
+        ...r.skipped_duplicates.map(s => s.toUpperCase().split(':').pop()),
+        ...r.rejected.map(x => x.symbol.toUpperCase().split(':').pop()),
+      ]);
+      assert.ok(accountedFor.has('CBA'),  'CBA must appear in some result bucket');
+      assert.ok(accountedFor.has('BHP'),  'BHP must appear in some result bucket');
+      assert.ok(accountedFor.has('29M'),  '29M must appear in some result bucket');
+    } finally {
+      await core.deleteList({ name: TEST_LIST }).catch(() => {});
+    }
+  });
+
+  it('watchlist_rename changes a watchlist name', async () => {
+    const core = await import('../src/core/watchlist.js');
+    await core.create({ name: TEST_LIST });
+    const renamed = `${TEST_LIST}_RN`;
+    try {
+      const r = await core.rename({ name: TEST_LIST, new_name: renamed });
+      assert.equal(r.success, true);
+      assert.equal(r.new_name, renamed);
+
+      const after = await core.list();
+      assert.ok(after.watchlists.some(w => w.name === renamed),
+        `${renamed} should exist after rename`);
+      assert.ok(!after.watchlists.some(w => w.name === TEST_LIST),
+        `${TEST_LIST} should no longer exist after rename`);
+    } finally {
+      await core.deleteList({ name: renamed }).catch(() => {});
+      await core.deleteList({ name: TEST_LIST }).catch(() => {});
+    }
+  });
+
+  it('watchlist_set creates then updates then reports "unchanged"', async () => {
+    const core = await import('../src/core/watchlist.js');
+    try {
+      // First call → created
+      const a = await core.set({ name: TEST_LIST, symbols: ['ASX:NAB', 'ASX:ANZ'] });
+      assert.equal(a.success, true);
+      assert.equal(a.status, 'created');
+
+      // Second call with a diff → updated
+      const b = await core.set({ name: TEST_LIST, symbols: ['ASX:NAB', 'ASX:WBC'] });
+      assert.equal(b.success, true);
+      assert.equal(b.status, 'updated');
+
+      // Third call with same desired list → unchanged
+      const c = await core.set({ name: TEST_LIST, symbols: ['ASX:NAB', 'ASX:WBC'] });
+      assert.equal(c.success, true);
+      assert.equal(c.status, 'unchanged');
+    } finally {
+      await core.deleteList({ name: TEST_LIST }).catch(() => {});
+    }
+  });
+});

@@ -2,6 +2,7 @@
  * Core health/discovery/launch logic.
  */
 import { getClient, getTargetInfo, evaluate } from '../connection.js';
+import { withTimeout } from '../utils/timeout.js';
 import { existsSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 
@@ -29,6 +30,64 @@ export async function healthCheck() {
     })()
   `);
 
+  // --- Tier-2: data pipeline health probe (PRD Section 2.3) ---
+  //
+  // Tier-1 (above) confirms the CDP *socket* is up.  Tier-2 confirms the page
+  // can actually execute JS and return data — a green tier-1 with a stale CDP
+  // session or broken evaluate path would silently fail all data tools.
+  //
+  // Strategy:
+  //   • Use a 3s outer withTimeout so the probe never blocks the caller beyond
+  //     that budget, even if the inner CDP evaluate() stalls.
+  //   • Pass timeoutMs: 2500 into evaluate() opts so its internal per-call
+  //     sub-timeout fires before the outer 3s race — this prevents the
+  //     evaluate() stale-client retry path from consuming the full outer budget
+  //     and still allows it to fail fast and propagate the error upward.
+  //   • Query multiple selectors (comma-separated in one querySelector call) to
+  //     guard against TradingView's CSS module hash churn between app versions.
+  //   • Measure wall-clock latency so callers can detect degraded pipelines
+  //     before they hit tool-level timeouts.
+  const DATA_PIPELINE_PROBE_TIMEOUT_MS = 3_000;
+  // Inner evaluate budget: must be < outer probe timeout to ensure the inner
+  // stale-client retry does not consume the full outer race budget.
+  const DATA_PIPELINE_EVAL_TIMEOUT_MS = 2_500;
+
+  let data_pipeline_healthy = false;
+  let data_pipeline_latency_ms = 0;
+  let data_pipeline_error;
+
+  const probeStart = Date.now();
+  try {
+    // The expression evaluates a live DOM read. We use multiple selectors
+    // so a class-hash rename in any one TradingView release doesn't break
+    // the probe — at least one of these selectors is expected to match when
+    // the chart page is fully loaded and the CDP connection is healthy.
+    const probeExpression =
+      `document.querySelector('.chart-container, .chart-page, [class*="chart-container"]') !== null`;
+
+    const probeResult = await withTimeout(
+      evaluate(probeExpression, { timeoutMs: DATA_PIPELINE_EVAL_TIMEOUT_MS }),
+      DATA_PIPELINE_PROBE_TIMEOUT_MS,
+      'data_pipeline_probe',
+    );
+
+    data_pipeline_latency_ms = Date.now() - probeStart;
+    // A truthy return means the chart DOM is present — pipeline is healthy.
+    // A falsy return (null querySelector result cast to false) means the page
+    // loaded but has no recognisable chart container — mark as unhealthy with
+    // a descriptive reason so callers know this is a page-state issue, not a
+    // transport issue.
+    data_pipeline_healthy = probeResult === true;
+    if (!data_pipeline_healthy) {
+      data_pipeline_error =
+        'Chart container element not found in DOM — TradingView may still be loading or the chart page is not active';
+    }
+  } catch (err) {
+    data_pipeline_latency_ms = Date.now() - probeStart;
+    data_pipeline_healthy = false;
+    data_pipeline_error = err.message;
+  }
+
   return {
     success: true,
     cdp_connected: true,
@@ -39,6 +98,10 @@ export async function healthCheck() {
     chart_resolution: state?.resolution || 'unknown',
     chart_type: state?.chartType ?? null,
     api_available: state?.apiAvailable ?? false,
+    // Tier-2 data pipeline fields (PRD Section 2.3)
+    data_pipeline_healthy,
+    data_pipeline_latency_ms,
+    ...(data_pipeline_error !== undefined ? { data_pipeline_error } : {}),
   };
 }
 
@@ -222,30 +285,51 @@ export async function launch({ port, kill_existing } = {}) {
   const child = spawn(tvPath, [`--remote-debugging-port=${cdpPort}`], { detached: true, stdio: 'ignore' });
   child.unref();
 
-  for (let i = 0; i < 15; i++) {
-    await new Promise(r => setTimeout(r, 1000));
+  // PRD Section 2.6: poll every 500ms for up to 30s so the inner launch logic
+  // surfaces a hard error on its own rather than relying solely on the outer
+  // withLaunchTimeout cap in tools/health.js.  Both agree on a 30s budget, so
+  // if CDP comes up at 29.9s we still catch it; at 30s they both agree on
+  // failure with consistent messaging.
+  //
+  // Endpoint choice: we keep /json/version rather than the PRD's suggested
+  // /json.  Both endpoints prove CDP is listening, but /json/version returns a
+  // single small JSON object (Browser, Protocol-Version, …) while /json returns
+  // the full target list which can be several kilobytes when many tabs exist.
+  // /json/version is lighter and sufficient to prove the process is up and
+  // serving the debug protocol.
+  const POLL_INTERVAL_MS = 500;
+  const POLL_BUDGET_MS = 30_000;
+  // Per-request abort window must be shorter than the poll interval so one
+  // slow/hung TCP connection never delays the next attempt.  400ms gives a
+  // 100ms gap before the next poll fires.
+  const POLL_REQUEST_TIMEOUT_MS = 400;
+  const cdpVersionUrl = `http://localhost:${cdpPort}/json/version`;
+  const pollDeadline = Date.now() + POLL_BUDGET_MS;
+
+  while (Date.now() < pollDeadline) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL_MS));
+    const ctrl = new AbortController();
+    const abortTimer = setTimeout(() => ctrl.abort(), POLL_REQUEST_TIMEOUT_MS);
     try {
-      const http = await import('http');
-      const ready = await new Promise((resolve) => {
-        http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
-          let data = '';
-          res.on('data', (chunk) => data += chunk);
-          res.on('end', () => resolve(data));
-        }).on('error', () => resolve(null));
-      });
-      if (ready) {
-        const info = JSON.parse(ready);
-        return {
-          success: true, platform, binary: tvPath, pid: child.pid,
-          cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
-          browser: info.Browser, user_agent: info['User-Agent'],
-        };
-      }
-    } catch { /* retry */ }
+      const resp = await fetch(cdpVersionUrl, { signal: ctrl.signal });
+      const info = await resp.json();
+      return {
+        success: true, platform, binary: tvPath, pid: child.pid,
+        cdp_port: cdpPort, cdp_url: `http://localhost:${cdpPort}`,
+        browser: info.Browser, user_agent: info['User-Agent'],
+      };
+    } catch {
+      // Network error or abort — process is still starting; continue polling.
+    } finally {
+      clearTimeout(abortTimer);
+    }
   }
 
-  return {
-    success: true, platform, binary: tvPath, pid: child.pid, cdp_port: cdpPort, cdp_ready: false,
-    warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
-  };
+  // 30s elapsed with no CDP response.  Throw so the caller (and the outer
+  // withLaunchTimeout wrapper) receives a hard error instead of a misleading
+  // success object.  The port is interpolated into the message so the hint
+  // is accurate when a non-default port was requested.
+  throw new Error(
+    `TradingView did not start within 30s. Try launching it manually with --remote-debugging-port=${cdpPort}`,
+  );
 }

@@ -58,33 +58,109 @@ export async function openPanel({ panel, action }) {
     if (result && result.error) throw new Error(result.error);
     return { success: true, panel, action, was_open: result?.was_open ?? false, performed: result?.performed ?? 'unknown' };
   } else {
+    // Selector map for right-sidebar toggle buttons.
+    //
+    // IMPORTANT — watchlist entry:
+    //   Confirmed via live CDP probe on 2026-04-22. TradingView's right-sidebar
+    //   "Watchlist, details, and news" button uses data-name="base" (NOT the old
+    //   "base-watchlist-widget-button" value, which was never present in the DOM).
+    //   A secondary inner button (data-name="watchlists-button") is the watchlist
+    //   switcher inside the panel — do not use it for toggling the sidebar.
+    //   Fallback aria-label kept as a defensive secondary selector.
     const selectorMap = {
-      'watchlist': { dataName: 'base-watchlist-widget-button', ariaLabel: 'Watchlist' },
+      'watchlist': {
+        // Primary: confirmed via live DOM probe (aria-pressed reflects open state)
+        dataName: 'base',
+        // Fallback: full accessible label as seen in live DOM
+        ariaLabel: 'Watchlist, details, and news',
+      },
       'alerts': { dataName: 'alerts-button', ariaLabel: 'Alerts' },
       'trading': { dataName: 'trading-button', ariaLabel: 'Trading Panel' },
     };
     const sel = selectorMap[panel];
+    if (!sel) throw new Error('Unknown panel: ' + panel);
+
+    // For the watchlist panel, aria-pressed is the authoritative open/closed
+    // signal — it updates synchronously when the button is clicked, regardless
+    // of sidebar animation state. For other panels we fall back to the combined
+    // isActive + sidebarOpen heuristic that was already in place.
+    const isWatchlist = panel === 'watchlist';
+
     const result = await evaluate(`
       (function() {
         var dataName = ${JSON.stringify(sel.dataName)};
         var ariaLabel = ${JSON.stringify(sel.ariaLabel)};
         var action = ${JSON.stringify(action)};
-        var btn = document.querySelector('[data-name="' + dataName + '"]') || document.querySelector('[aria-label="' + ariaLabel + '"]');
+        var isWatchlist = ${JSON.stringify(isWatchlist)};
+
+        // Resolve button: prefer data-name, fall back to aria-label.
+        var btn = document.querySelector('[data-name="' + dataName + '"]')
+               || document.querySelector('[aria-label="' + ariaLabel.replace(/"/g, '\\"') + '"]');
         if (!btn) return { error: 'Button not found for panel: ' + ${JSON.stringify(panel)} };
-        var isActive = btn.getAttribute('aria-pressed') === 'true' || btn.classList.contains('isActive') || btn.classList.toString().indexOf('active') !== -1 || btn.classList.toString().indexOf('Active') !== -1;
-        var rightArea = document.querySelector('[class*="layout__area--right"]');
-        var sidebarOpen = !!(rightArea && rightArea.offsetWidth > 50);
-        var isOpen = isActive && sidebarOpen;
+
+        // Determine open state.
+        // Watchlist: trust aria-pressed alone — it is set by TradingView synchronously.
+        // Others: combine aria-pressed / class heuristics with sidebar width check.
+        var isOpen;
+        if (isWatchlist) {
+          isOpen = btn.getAttribute('aria-pressed') === 'true';
+        } else {
+          var isActive = btn.getAttribute('aria-pressed') === 'true'
+                      || btn.classList.contains('isActive')
+                      || btn.classList.toString().indexOf('active') !== -1
+                      || btn.classList.toString().indexOf('Active') !== -1;
+          var rightArea = document.querySelector('[class*="layout__area--right"]');
+          var sidebarOpen = !!(rightArea && rightArea.offsetWidth > 50);
+          isOpen = isActive && sidebarOpen;
+        }
+
         var performed = 'none';
         if (action === 'open' && !isOpen) { btn.click(); performed = 'opened'; }
-        else if (action === 'close' && isOpen) { btn.click(); performed = 'closed'; }
+        else if (action === 'open' && isOpen)  { performed = 'already_open'; }
+        else if (action === 'close' && isOpen)  { btn.click(); performed = 'closed'; }
+        else if (action === 'close' && !isOpen) { performed = 'already_closed'; }
         else if (action === 'toggle') { btn.click(); performed = isOpen ? 'closed' : 'opened'; }
         else { performed = isOpen ? 'already_open' : 'already_closed'; }
+
         return { was_open: isOpen, performed: performed };
       })()
     `);
     if (result && result.error) throw new Error(result.error);
-    return { success: true, panel, action, was_open: result?.was_open ?? false, performed: result?.performed ?? 'unknown' };
+
+    // After a click that opens the watchlist panel, poll for content to confirm
+    // the sidebar body has populated. Timeout: 2 s, interval: 100 ms.
+    let contentReady = null;
+    let warning = undefined;
+    if (result?.performed === 'opened' && isWatchlist) {
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 100));
+        contentReady = await evaluate(`
+          (function() {
+            // .widgetbar-widgetbody confirmed present in live DOM probe (468 px wide, 1 child).
+            // Also try data-name="widgetbar-wrap" as a broader fallback.
+            var body = document.querySelector('.widgetbar-widgetbody')
+                    || document.querySelector('[data-name="widgetbar-wrap"]');
+            return body ? { found: true, child_count: body.children.length, width: body.offsetWidth } : { found: false };
+          })()
+        `);
+        if (contentReady?.found && contentReady.child_count > 0 && contentReady.width > 0) break;
+      }
+      if (!contentReady?.found || contentReady.child_count === 0) {
+        warning = 'Watchlist panel was clicked open but widgetbar body did not populate within 2 s';
+      }
+    }
+
+    const response = {
+      success: true,
+      panel,
+      action,
+      was_open: result?.was_open ?? false,
+      performed: result?.performed ?? 'unknown',
+    };
+    if (contentReady !== null) response.content_ready = contentReady;
+    if (warning !== undefined) response.warning = warning;
+    return response;
   }
 }
 

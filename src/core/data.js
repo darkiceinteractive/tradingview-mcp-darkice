@@ -1,5 +1,31 @@
 /**
  * Core data access logic.
+ *
+ * PRD Section 2.2 — shared async dependency audit.
+ *
+ * Symptom: quote_get, data_get_ohlcv, and data_get_study_values all silently
+ * hung for 4 minutes, while chart_get_state worked.
+ *
+ * What they share (and chart_get_state avoids): drilling into TradingView's
+ * internal chart model —
+ *   quote_get / getOhlcv  → window.TradingViewApi._activeChartWidgetWV
+ *                             .value()._chartWidget.model().mainSeries().bars()
+ *   getStudyValues        → ._chartWidget.model().model().dataSources()[i]
+ *                             .dataWindowView().items()
+ * chart_get_state uses only the public widget facade (chart.symbol(),
+ * chart.resolution(), chart.getAllStudies()) and never touches ._chartWidget.
+ *
+ * The JS bodies below are fully synchronous, so the hang is not at the JS
+ * level — a JS error would surface as an exception, not silence. The hang
+ * is at the CDP transport layer: `client.Runtime.evaluate` had no timeout,
+ * and a stale/half-open CDP session (triggered by tab navigation, TV being
+ * backgrounded, or a socket that was never cleanly closed) meant the reply
+ * never arrived. Internal model drill-down produces heavier evaluate
+ * payloads, which is likely why it tips the wobbly pipe over while the
+ * cheap facade calls in chart_get_state still squeak through.
+ *
+ * Fix lives in ../connection.js: per-evaluate sub-timeout, StaleClientError
+ * detection, and one automatic re-attach + retry on a fresh CDP session.
  */
 import { evaluate, evaluateAsync, KNOWN_PATHS } from '../connection.js';
 

@@ -4,8 +4,66 @@ let client = null;
 let targetInfo = null;
 const CDP_HOST = 'localhost';
 const CDP_PORT = 9222;
-const MAX_RETRIES = 5;
-const BASE_DELAY = 500;
+// Keep the full reconnect path well inside the 15s tool budget.
+// Previous values (5 retries, exponential up to 30s each) could burn
+// 60s+ on cold start, guaranteeing the tool-level timeout fires first.
+const MAX_RETRIES = 3;
+const BASE_DELAY = 250;
+const MAX_DELAY = 1_500;
+const FIND_TARGET_TIMEOUT_MS = 2_000;
+
+// PRD Section 2.2 — Shared async dependency audit.
+//
+// Root-cause analysis of the 4-minute silent hang observed in quote_get,
+// data_get_ohlcv, and data_get_study_values (while chart_get_state worked):
+//
+//   * chart_get_state uses only the public widget facade
+//     (chart.symbol(), chart.resolution(), chart.getAllStudies()).
+//   * The hanging tools drill into internal model objects
+//     (._chartWidget.model().mainSeries().bars() and
+//     .dataSources()[i].dataWindowView().items()).
+//
+// The JS bodies are synchronous — a JS-level bug would surface as an
+// exception or empty data, not a minutes-long silent hang. The hang is at
+// the CDP transport layer: `Runtime.evaluate` with no timeout combined
+// with a stale/half-open CDP session (TV tab navigated, app backgrounded,
+// socket never cleanly disconnected). Internal model drill-down triggers
+// heavier evaluate payloads that are more likely to stall a wobbly CDP
+// pipe than the lightweight facade calls chart_get_state uses.
+//
+// Fix: enforce per-CDP-call sub-timeouts, mark the client stale on expiry,
+// and auto-reconnect + retry once on a fresh session before giving up.
+const LIVENESS_TIMEOUT_MS = 2_000;
+const DEFAULT_EVAL_TIMEOUT_MS = 10_000;
+
+function getEvalTimeoutMs() {
+  const raw = process.env.TV_MCP_EVAL_TIMEOUT_MS;
+  if (!raw) return DEFAULT_EVAL_TIMEOUT_MS;
+  const n = Number.parseInt(String(raw), 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_EVAL_TIMEOUT_MS;
+}
+
+function raceTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new StaleClientError(`${label} timed out after ${ms}ms`)), ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+class StaleClientError extends Error {
+  constructor(message) { super(message); this.name = 'StaleClientError'; }
+}
+
+async function invalidateClient() {
+  const old = client;
+  client = null;
+  targetInfo = null;
+  if (old) {
+    try { await old.close(); } catch { /* best-effort */ }
+  }
+}
 
 // Known direct API paths discovered via live probing (see PROBE_RESULTS.md)
 const KNOWN_PATHS = {
@@ -31,12 +89,15 @@ export { KNOWN_PATHS };
 export async function getClient() {
   if (client) {
     try {
-      // Quick liveness check
-      await client.Runtime.evaluate({ expression: '1', returnByValue: true });
+      // Fast liveness check — if this stalls, the session is half-open.
+      await raceTimeout(
+        client.Runtime.evaluate({ expression: '1', returnByValue: true }),
+        LIVENESS_TIMEOUT_MS,
+        'CDP liveness check',
+      );
       return client;
     } catch {
-      client = null;
-      targetInfo = null;
+      await invalidateClient();
     }
   }
   return connect();
@@ -61,7 +122,7 @@ export async function connect() {
       return client;
     } catch (err) {
       lastError = err;
-      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), 30000);
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), MAX_DELAY);
       await new Promise(r => setTimeout(r, delay));
     }
   }
@@ -69,12 +130,19 @@ export async function connect() {
 }
 
 async function findChartTarget() {
-  const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
-  const targets = await resp.json();
-  // Prefer targets with tradingview.com/chart in the URL
-  return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
-    || null;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), FIND_TARGET_TIMEOUT_MS);
+  if (typeof timer.unref === 'function') timer.unref();
+  try {
+    const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`, { signal: ctrl.signal });
+    const targets = await resp.json();
+    // Prefer targets with tradingview.com/chart in the URL
+    return targets.find(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
+      || targets.find(t => t.type === 'page' && /tradingview/i.test(t.url))
+      || null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 export async function getTargetInfo() {
@@ -85,20 +153,40 @@ export async function getTargetInfo() {
 }
 
 export async function evaluate(expression, opts = {}) {
-  const c = await getClient();
-  const result = await c.Runtime.evaluate({
-    expression,
-    returnByValue: true,
-    awaitPromise: opts.awaitPromise ?? false,
-    ...opts,
-  });
-  if (result.exceptionDetails) {
-    const msg = result.exceptionDetails.exception?.description
-      || result.exceptionDetails.text
-      || 'Unknown evaluation error';
-    throw new Error(`JS evaluation error: ${msg}`);
+  const evalTimeoutMs = opts.timeoutMs ?? getEvalTimeoutMs();
+  // Two attempts: first on the cached client, second on a freshly attached one.
+  // Retry only on StaleClientError (transport-level hang or socket drop).
+  let lastErr;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const c = await getClient();
+    try {
+      const result = await raceTimeout(
+        c.Runtime.evaluate({
+          expression,
+          returnByValue: true,
+          awaitPromise: opts.awaitPromise ?? false,
+          ...opts,
+        }),
+        evalTimeoutMs,
+        `CDP evaluate (attempt ${attempt})`,
+      );
+      if (result.exceptionDetails) {
+        const msg = result.exceptionDetails.exception?.description
+          || result.exceptionDetails.text
+          || 'Unknown evaluation error';
+        throw new Error(`JS evaluation error: ${msg}`);
+      }
+      return result.result?.value;
+    } catch (err) {
+      lastErr = err;
+      const stale = err instanceof StaleClientError
+        || /WebSocket|socket hang up|not opened|closed|ECONNREFUSED|ECONNRESET/i.test(err?.message || '');
+      if (!stale || attempt === 2) throw err;
+      process.stderr.write(`[cdp] evaluate stalled on attempt ${attempt}, re-attaching CDP session...\n`);
+      await invalidateClient();
+    }
   }
-  return result.result?.value;
+  throw lastErr;
 }
 
 export async function evaluateAsync(expression) {

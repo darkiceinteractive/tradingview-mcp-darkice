@@ -1,7 +1,7 @@
 /**
  * Core health/discovery/launch logic.
  */
-import { getClient, getTargetInfo, evaluate } from '../connection.js';
+import { getClient, getTargetInfo, evaluate, disconnect } from '../connection.js';
 import { withTimeout } from '../utils/timeout.js';
 import { existsSync } from 'fs';
 import { execSync, spawn } from 'child_process';
@@ -332,4 +332,128 @@ export async function launch({ port, kill_existing } = {}) {
   throw new Error(
     `TradingView did not start within 30s. Try launching it manually with --remote-debugging-port=${cdpPort}`,
   );
+}
+
+/**
+ * Hard restart TradingView Desktop — kill existing process, wait for full
+ * exit, relaunch with CDP enabled. Designed for unattended recovery when the
+ * CDP session wedges or a tool hangs and you want a clean slate without
+ * asking the user to do anything manually.
+ *
+ * Stderr-logs every phase so the invoker sees progress in real time (MCP
+ * clients typically surface stderr as tool-progress lines). Never writes to
+ * stdout — stdout is the MCP protocol channel.
+ *
+ * Reuses launch() for the find-binary + spawn + poll-CDP path so the PRD §2.6
+ * hardening (30s budget, AbortController-per-request, hard error string)
+ * applies here too — we just bypass launch's own pkill step by passing
+ * kill_existing: false, because we do the kill + pgrep-wait ourselves with
+ * user-visible progress.
+ *
+ * @param {object} [opts]
+ * @param {number} [opts.port]  CDP port (default 9222).
+ * @returns {Promise<object>}   { success, previous_pid, new_pid, platform,
+ *                                binary, cdp_port, cdp_url, browser,
+ *                                user_agent, elapsed_ms, phases }
+ */
+export async function restart({ port } = {}) {
+  const cdpPort = port || 9222;
+  const platform = process.platform;
+  const started = Date.now();
+  const phases = {};
+  const log = (msg) => process.stderr.write(`[tv_restart] ${msg}\n`);
+
+  // --- Phase 1: Close our CDP client so it doesn't cling to a socket that is
+  // about to die. If we don't do this, the next evaluate() after restart may
+  // try to reuse a dead WebSocket before hitting the reconnect path.
+  log('Closing existing CDP client...');
+  const tDisconnect = Date.now();
+  try { await disconnect(); } catch { /* best-effort */ }
+  phases.disconnect_ms = Date.now() - tDisconnect;
+
+  // --- Phase 2: Capture current PID (best-effort, purely for the response
+  // payload so the user can see what we replaced).
+  let previousPid = null;
+  try {
+    if (platform === 'win32') {
+      const out = execSync(
+        'tasklist /FI "IMAGENAME eq TradingView.exe" /FO CSV /NH',
+        { timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] },
+      ).toString();
+      const match = out.match(/"(\d+)"/);
+      if (match) previousPid = Number.parseInt(match[1], 10);
+    } else {
+      const out = execSync('pgrep -f TradingView', {
+        timeout: 2000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
+      const pids = out.split('\n').filter(Boolean);
+      if (pids.length) previousPid = Number.parseInt(pids[0], 10);
+    }
+  } catch { /* not running — that's fine, restart handles a cold start too */ }
+
+  // --- Phase 3: Kill the process.
+  log(previousPid
+    ? `Killing TradingView (PID ${previousPid})...`
+    : 'Killing TradingView (no running instance detected)...');
+  const tKill = Date.now();
+  try {
+    if (platform === 'win32') {
+      execSync('taskkill /F /IM TradingView.exe', { timeout: 5000, stdio: 'ignore' });
+    } else {
+      execSync('pkill -f TradingView', { timeout: 5000, stdio: 'ignore' });
+    }
+  } catch { /* may not be running — continue to relaunch regardless */ }
+
+  // --- Phase 4: Poll until the process is fully gone. Killing is async on
+  // macOS/Linux and the next spawn can race if we don't wait. Budget 5s —
+  // SIGTERM followed by SIGKILL should complete within that on any sane box.
+  const exitDeadline = Date.now() + 5_000;
+  while (Date.now() < exitDeadline) {
+    if (platform === 'win32') {
+      // taskkill /F is synchronous-enough; one short settle and we move on.
+      await new Promise(r => setTimeout(r, 1500));
+      break;
+    }
+    let stillRunning = false;
+    try {
+      const out = execSync('pgrep -f TradingView', {
+        timeout: 1000, stdio: ['ignore', 'pipe', 'ignore'],
+      }).toString().trim();
+      stillRunning = out.length > 0;
+    } catch {
+      // pgrep exits with status 1 when no process matches — means it's gone.
+      stillRunning = false;
+    }
+    if (!stillRunning) break;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  phases.kill_ms = Date.now() - tKill;
+  log(`Process exited after ${phases.kill_ms}ms.`);
+
+  // --- Phase 5: Relaunch via launch() so PRD §2.6 polling hardening applies.
+  // We pass kill_existing:false because we just did that ourselves with
+  // visible progress; having launch() try to pkill an already-dead process
+  // would swallow the 1.5s it sleeps afterwards for no benefit.
+  log(`Launching TradingView with --remote-debugging-port=${cdpPort}...`);
+  const tSpawn = Date.now();
+  const launchResult = await launch({ port: cdpPort, kill_existing: false });
+  phases.spawn_and_cdp_ready_ms = Date.now() - tSpawn;
+  log(`CDP ready at ${launchResult.cdp_url} (${phases.spawn_and_cdp_ready_ms}ms).`);
+
+  const elapsed_ms = Date.now() - started;
+  log(`Restart complete. Total elapsed: ${elapsed_ms}ms.`);
+
+  return {
+    success: true,
+    previous_pid: previousPid,
+    new_pid: launchResult.pid,
+    platform: launchResult.platform,
+    binary: launchResult.binary,
+    cdp_port: launchResult.cdp_port,
+    cdp_url: launchResult.cdp_url,
+    browser: launchResult.browser,
+    user_agent: launchResult.user_agent,
+    elapsed_ms,
+    phases,
+  };
 }

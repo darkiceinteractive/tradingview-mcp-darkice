@@ -28,4 +28,11 @@ export function registerHealthTools(server) {
     try { return jsonResult(await withLaunchTimeout(core.launch({ port, kill_existing }), 'tv_launch')); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
+
+  server.tool('tv_restart', 'Hard-restart TradingView Desktop: close the CDP client, pkill the running process, wait for exit, and relaunch with --remote-debugging-port. Use when a tool has hung or the CDP session has wedged and you want a clean slate without user interaction. Progress lines are written to stderr so the caller sees each phase.', {
+    port: z.coerce.number().optional().describe('CDP port to relaunch on (default 9222)'),
+  }, async ({ port }) => {
+    try { return jsonResult(await withLaunchTimeout(core.restart({ port }), 'tv_restart')); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
 }

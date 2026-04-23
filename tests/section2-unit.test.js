@@ -252,3 +252,103 @@ describe('Section 2.6 — launch() source-level contract', () => {
     assert.doesNotMatch(healthSrc, /warning:\s*['"]TradingView launched but CDP not responding/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// restart() — source-level contract
+//
+// restart() is the "unattended recovery" extension on top of launch(). We
+// verify its source rather than executing it because a real restart would
+// kill the user's TV session mid-test. A live gated test lives in
+// tests/live.test.js under TV_MCP_ALLOW_RESTART_TEST=1 for manual use.
+// ---------------------------------------------------------------------------
+
+describe('restart() source-level contract', () => {
+  const healthSrc = readFileSync(resolve(repoRoot, 'src/core/health.js'), 'utf8');
+  const restartBody = (() => {
+    const after = healthSrc.split('export async function restart')[1];
+    if (!after) return '';
+    // Grab the function body up to (and including) the closing brace of the
+    // top-level function. Not perfectly robust but matches our style and the
+    // current file layout.
+    return after.split('\n}\n')[0];
+  })();
+
+  it('exports a restart function', () => {
+    assert.match(healthSrc, /export async function restart\b/);
+  });
+
+  it('closes the CDP client before killing (imports and invokes disconnect)', () => {
+    // connection.js import must include disconnect.
+    assert.match(
+      healthSrc,
+      /import\s*\{[^}]*\bdisconnect\b[^}]*\}\s*from\s*['"]\.\.\/connection\.js['"]/,
+    );
+    // And restart() body must await it.
+    assert.match(restartBody, /await disconnect\(\s*\)/);
+  });
+
+  it('kills TradingView with platform-appropriate commands', () => {
+    assert.match(restartBody, /pkill -f TradingView/);
+    assert.match(restartBody, /taskkill \/F \/IM TradingView\.exe/);
+  });
+
+  it('polls pgrep/tasklist to wait for process exit (not a blind sleep)', () => {
+    // Must actually verify exit, not just setTimeout and hope.
+    assert.match(restartBody, /pgrep -f TradingView/);
+  });
+
+  it('reuses launch() for spawn + CDP polling (no duplication, inherits PRD §2.6 hardening)', () => {
+    assert.match(restartBody, /await launch\(\s*\{[^}]*kill_existing:\s*false/);
+  });
+
+  it('writes progress to stderr only (MCP stdio safety)', () => {
+    assert.match(restartBody, /process\.stderr\.write/);
+    assert.doesNotMatch(restartBody, /process\.stdout\.write/);
+    assert.doesNotMatch(restartBody, /\bconsole\.log\b/);
+  });
+
+  it('prefixes every stderr line with [tv_restart] for log filtering', () => {
+    assert.match(restartBody, /\[tv_restart\]/);
+  });
+
+  it('tracks phase timings for observability', () => {
+    assert.match(restartBody, /phases\.disconnect_ms\s*=/);
+    assert.match(restartBody, /phases\.kill_ms\s*=/);
+    assert.match(restartBody, /phases\.spawn_and_cdp_ready_ms\s*=/);
+    assert.match(restartBody, /elapsed_ms/);
+  });
+
+  it('captures previous PID for the response payload (best-effort)', () => {
+    // Non-fatal — restart must cope with no running TV — but when present,
+    // the PID is surfaced to the caller so they can confirm we replaced the
+    // right process.
+    assert.match(restartBody, /previous_pid/);
+  });
+
+  it('response shape mirrors launch() with the restart-specific additions', () => {
+    assert.match(restartBody, /cdp_port:/);
+    assert.match(restartBody, /cdp_url:/);
+    assert.match(restartBody, /new_pid:/);
+    assert.match(restartBody, /phases,?\s*\n?\s*\}/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tv_restart — tool registration contract (exposes the core function as MCP)
+// ---------------------------------------------------------------------------
+
+describe('tv_restart tool registration', () => {
+  const healthToolSrc = readFileSync(resolve(repoRoot, 'src/tools/health.js'), 'utf8');
+
+  it('registers a tv_restart tool', () => {
+    assert.match(healthToolSrc, /server\.tool\(\s*['"]tv_restart['"]/);
+  });
+
+  it('wraps core.restart with withLaunchTimeout (not withToolTimeout)', () => {
+    // Restart spawns a process and waits up to 30s for CDP. The 15s tool
+    // budget would cut it off mid-way.
+    const block = healthToolSrc.split("'tv_restart'")[1];
+    assert.ok(block, 'tv_restart registration block missing');
+    assert.match(block, /withLaunchTimeout\(\s*core\.restart/);
+  });
+});

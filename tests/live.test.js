@@ -56,6 +56,14 @@ const disruptiveSkip = (TV_UP && process.env.TV_MCP_ALLOW_DISRUPTIVE_TESTS === '
   : (TV_UP
       ? 'set TV_MCP_ALLOW_DISRUPTIVE_TESTS=1 to enable — this test navigates the live chart'
       : liveSkip);
+// Restart is more disruptive than chart navigation — it actually kills the TV
+// process. Gate behind its own env var so even the broader disruptive suite
+// does not trigger it by accident.
+const restartSkip = (TV_UP && process.env.TV_MCP_ALLOW_RESTART_TEST === '1')
+  ? false
+  : (TV_UP
+      ? 'set TV_MCP_ALLOW_RESTART_TEST=1 to enable — this test KILLS and restarts TradingView'
+      : liveSkip);
 
 // ---------------------------------------------------------------------------
 // Section 2.3 — tier-2 data pipeline probe on tv_health_check
@@ -511,5 +519,49 @@ describe('Section 4 — watchlist (write)', { skip: disruptiveSkip }, () => {
     } finally {
       await core.deleteList({ name: TEST_LIST }).catch(() => {});
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tv_restart — live integration test
+//
+// ACTUALLY kills TradingView and restarts it. Will wipe out the user's tab
+// state, undo any unsaved Pine work, and make the chart reload from scratch.
+// DO NOT run this in CI or alongside other tests. Gated behind its own env
+// var so the broader disruptive suite never triggers it.
+// ---------------------------------------------------------------------------
+
+describe('tv_restart — live integration', { skip: restartSkip }, () => {
+  it('kills TV, relaunches with CDP, and returns ready within 45s', async () => {
+    const { restart } = await import('../src/core/health.js');
+
+    const t = Date.now();
+    const r = await restart({});
+    const elapsed = Date.now() - t;
+
+    assert.equal(r.success, true);
+    assert.equal(typeof r.new_pid, 'number');
+    assert.ok(r.cdp_url.includes(':9222'), 'cdp_url should point at the debug port');
+    assert.ok(r.elapsed_ms < 45000,
+      `restart should complete well inside the 30s launch budget + kill overhead (got ${r.elapsed_ms}ms)`);
+    assert.ok(elapsed < 45000, `whole call elapsed ${elapsed}ms`);
+
+    // Phase timings must be populated.
+    assert.equal(typeof r.phases.disconnect_ms, 'number');
+    assert.equal(typeof r.phases.kill_ms, 'number');
+    assert.equal(typeof r.phases.spawn_and_cdp_ready_ms, 'number');
+
+    // After restart, CDP must actually respond to a real evaluate. If this
+    // fails we restarted TV but didn't leave the client in a usable state.
+    const { evaluate } = await import('../src/connection.js');
+    const chartPresent = await evaluate(
+      `document.querySelector('.chart-container, .chart-page, [class*="chart-container"]') !== null`,
+      { timeoutMs: 5000 },
+    );
+    // Chart may take a moment to fully render after relaunch; we only assert
+    // the evaluate itself succeeded (truthy or falsy doesn't matter as long
+    // as we got a boolean back instead of a thrown error).
+    assert.ok(typeof chartPresent === 'boolean',
+      'post-restart CDP evaluate should return a boolean, got ' + typeof chartPresent);
   });
 });

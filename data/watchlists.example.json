@@ -1,0 +1,34 @@
+{
+  "_comment": "Example shape for scripts/upsert-watchlists.js. Copy this file to data/watchlists.json and edit. Accepts top-level array form OR { watchlists: [...] } form (both equivalent).",
+  "watchlists": [
+    {
+      "name": "ASX_BANKS_FINANCIALS",
+      "symbols": [
+        "ASX:CBA",
+        "ASX:NAB",
+        "ASX:ANZ",
+        "ASX:WBC",
+        "ASX:MQG"
+      ]
+    },
+    {
+      "name": "ASX_MINING_MAJORS",
+      "symbols": [
+        "ASX:BHP",
+        "ASX:RIO",
+        "ASX:FMG",
+        "ASX:S32",
+        "ASX:NST"
+      ]
+    },
+    {
+      "_note": "Numeric-prefix ASX tickers like ASX:29M, ASX:360, ASX:5GG are sometimes rejected by TradingView. They will land in the report's rejected_symbols array without aborting the batch.",
+      "name": "ASX_SMALLCAPS_EXAMPLE",
+      "symbols": [
+        "ASX:29M",
+        "ASX:360",
+        "ASX:5GG"
+      ]
+    }
+  ]
+}

@@ -1,6 +1,10 @@
 node_modules/
 screenshots/
 scripts/current.pine
+scripts/probe-*.js
 temp_*
 *.log
 discovery-log.json
+
+# User's private watchlist data — example is committed; real data is not
+data/watchlists.json

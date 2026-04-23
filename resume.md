@@ -1,17 +1,25 @@
 # Session resume — TradingView MCP darkice
 
-**Last active:** 2026-04-23 ~07:10 AEDT
+**Last active:** 2026-04-23 ~12:10 AEDT
 **Working directory:** `/Users/mattcrombie/Dev/Projects/mcp-servers/tradingview-mcp-darkice`
-**Branch:** `main` — committed through `a508fcd` (Section 4 watchlist suite)
+**Branch:** `main` — committed through `ffaf7bf` (UPSERT driver)
 **Driver document:** `PRD.md`
 
 ---
 
 ## TL;DR — where to pick up
 
-PRD Sections 2, 3, and **4** are all complete and **committed**. The 8-tool watchlist suite landed this session, along with the Claude Desktop test-feedback items: `quote_get` symbol-param bug is fixed (real temp-switch, not a mislabel), and `docs/timeout-evidence.md` gives the human tester concrete evidence that §2.1/§2.4/§2.6/§3.4 fire correctly.
+PRD §2, §3, §4 are complete and committed. §5.2 is now **one command away** — the UPSERT driver (`scripts/upsert-watchlists.js`) reads `data/watchlists.json` and runs `watchlist_set` for each entry. You just need to drop your 24 list definitions into that JSON file.
 
-The natural next move is the **24-watchlist UPSERT** (PRD §5.2) — now unblocked.
+Also this session: `tv_restart` tool for unattended recovery when CDP wedges (live-verified ~5.7s end-to-end).
+
+**Do this next:**
+```bash
+cp data/watchlists.example.json data/watchlists.json
+# edit data/watchlists.json with your 24 lists
+npm run upsert:dry     # validate + count, no TV mutation
+npm run upsert         # run it — ~6 min wall clock for 24 lists
+```
 
 ---
 
@@ -33,14 +41,18 @@ The natural next move is the **24-watchlist UPSERT** (PRD §5.2) — now unblock
 | **4.2 + 4.3 watchlist suite (8 tools)** | ✅ done, committed `a508fcd` | 7 live (2 read, 5 gated write) | `src/core/watchlist.js` grew to 898 lines |
 | 4.4 symbol handling (numeric-prefix ASX) | ✅ done | covered by add test | report rejection, don't abort |
 | 5.1 manual test script phases 1-3 | ✅ encoded as live tests | — | 7 watchlist live tests |
-| 5.2 24-watchlist UPSERT end-to-end | 🟡 unblocked, not run | — | **next logical step** |
+| **5.2 24-watchlist UPSERT** | 🟡 driver built, committed `ffaf7bf`; needs your 24 list defs | 27 unit | `scripts/upsert-watchlists.js` — drop JSON, run `npm run upsert` |
 | 6 code organisation | 🟡 flat (not nested) | — | scale-dependent — refactor later if needed |
+| **Extra: `tv_restart` tool** | ✅ done, committed `ee60dfe` | 12 unit + 1 gated live | unattended recovery; live-verified 5.7s end-to-end |
 
 ---
 
 ## Commits this session (newest first)
 
 ```
+ffaf7bf Add bulk watchlist UPSERT driver — PRD §5.2
+ee60dfe Add tv_restart tool for unattended TradingView recovery
+05eea2c Update resume.md for end-of-session state
 a508fcd Add 8-tool watchlist management suite — PRD §4
 7d2259f Add watchlist architecture scout — PRD §4.1 decision
 8ee4890 Add timeout evidence doc + probe script for tester verification
@@ -109,9 +121,10 @@ The `quote_get` symbol-switch test will work regardless of starting state — it
 | Env var | Default | Effect |
 |---|---|---|
 | `TV_MCP_TOOL_TIMEOUT_MS` | 15000 | Budget for any CDP-dependent tool handler |
-| `TV_MCP_LAUNCH_TIMEOUT_MS` | 30000 | Budget specifically for `tv_launch` |
+| `TV_MCP_LAUNCH_TIMEOUT_MS` | 30000 | Budget specifically for `tv_launch` and `tv_restart` |
 | `TV_MCP_EVAL_TIMEOUT_MS` | 10000 | Per-CDP-evaluate sub-timeout inside `connection.js` |
 | `TV_MCP_ALLOW_DISRUPTIVE_TESTS` | `0` (unset) | Set to `1` to enable chart-navigating + watchlist-mutating tests |
+| `TV_MCP_ALLOW_RESTART_TEST` | `0` (unset) | Set to `1` to enable the live `tv_restart` test — actually kills + relaunches TV |
 
 ---
 
@@ -209,8 +222,9 @@ src/
     ...
 
 tests/
-  section2-unit.test.js          ← 20 unit tests for §2.1/§2.4/§2.6
-  live.test.js                   ← 19 live tests total (read-only + gated write)
+  section2-unit.test.js          ← 32 unit tests for §2.1/§2.4/§2.6 + tv_restart source-level contract
+  upsert-unit.test.js            ← 27 unit tests for the UPSERT driver
+  live.test.js                   ← 20 live tests (read-only + gated write + gated restart)
 
 docs/
   timeout-evidence.md            ← §2.1/§2.4/§2.6/§3.4 tester evidence
@@ -218,7 +232,12 @@ docs/
 
 scripts/
   probe-timeout.js               ← §2.1/§2.4 runnable probe (committed)
-  probe-*.js (17 files)          ← scout artefacts — uncommitted, safe to delete
+  probe-*.js (17 files)          ← scout artefacts — now gitignored, still in working tree
+  upsert-watchlists.js           ← NEW — PRD §5.2 UPSERT driver
+
+data/
+  watchlists.example.json        ← committed example (3 lists)
+  watchlists.json                ← gitignored — user drops their 24 lists here
 
 PRD.md                           ← the spec
 resume.md                        ← this file

@@ -41,7 +41,7 @@
  * catches and converts to the `{ success: false, error }` envelope.
  */
 import { evaluate, getClient } from '../connection.js';
-import { openPanel } from './ui.js';
+import { openPanel, mouseClick } from './ui.js';
 
 const PANEL_SETTLE_MS = 400;
 const MENU_SETTLE_MS = 300;
@@ -128,37 +128,32 @@ async function openListsDropdown() {
 
 /** Click an action row in the open lists dropdown, matching by exact label text. */
 async function clickDropdownAction(label) {
-  const found = await evaluate(`
+  // TV swallows JS .click() on portal menu items — use real CDP mouse events via mouseClick().
+  const rect = await evaluate(`
     (function() {
       var menu = document.querySelector('[class*="menuBox"]');
       if (!menu) return { error: 'menu gone' };
-      var items = menu.querySelectorAll('.label-jFqVJoPk, [class*="label-jFqVJoPk"], span, div');
+      var items = Array.from(menu.querySelectorAll('span, div'));
       for (var i = 0; i < items.length; i++) {
-        if ((items[i].textContent || '').trim() === ${JSON.stringify(label)}) {
-          // Walk up to the accessible row and click it.
-          var row = items[i];
-          while (row && !(row.classList && row.classList.toString().indexOf('accessible-NQERJsv9') !== -1)) {
-            row = row.parentElement;
-            if (!row || row === menu) break;
+        if ((items[i].textContent || '').trim() !== ${JSON.stringify(label)}) continue;
+        var row = items[i];
+        while (row && row !== menu) {
+          var cls = (row.className || '').toString();
+          if (cls.indexOf('background-') !== -1 || cls.indexOf('button-H') !== -1 || cls.indexOf('accessible-') !== -1) {
+            var r = row.getBoundingClientRect();
+            return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
           }
-          if (row) { row.click(); return { clicked: true }; }
+          row = row.parentElement;
         }
+        var r2 = items[i].getBoundingClientRect();
+        return { x: Math.round(r2.x + r2.width / 2), y: Math.round(r2.y + r2.height / 2) };
       }
       return { error: 'action not found: ' + ${JSON.stringify(label)} };
     })()
   `);
-  if (found?.error) throw new Error(found.error);
+  if (rect?.error) throw new Error(rect.error);
+  await mouseClick({ x: rect.x, y: rect.y });
 }
-
-// ---------------------------------------------------------------------------
-// Watchlist list-all dialog (for watchlist_list and watchlist_delete)
-// ---------------------------------------------------------------------------
-
-/**
- * Open the full "Watchlists" dialog via `Open list…` in the dropdown.
- * This dialog enumerates every watchlist with its numeric id and symbol count,
- * plus per-row Remove and Rename buttons.
- */
 async function openListDialog() {
   await openListsDropdown();
   await clickDropdownAction('Open list…');
@@ -820,7 +815,7 @@ export async function rename({ name, new_name } = {}) {
 // Public tool: watchlist_set (UPSERT orchestration — no new UI primitives)
 // ---------------------------------------------------------------------------
 
-function baseSymbol(s) {
+export function baseSymbol(s) {
   const u = String(s).trim().toUpperCase();
   return u.includes(':') ? u.split(':').pop() : u;
 }

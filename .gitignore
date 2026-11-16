@@ -8,3 +8,6 @@ discovery-log.json
 
 # User's private watchlist data — example is committed; real data is not
 data/watchlists.json
+
+# Claude Code local (machine-specific) overrides
+.claude/settings.local.json

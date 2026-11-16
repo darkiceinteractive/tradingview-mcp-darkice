@@ -326,7 +326,7 @@ async function readQuoteFromActiveChart() {
  * BHP but chart showed SLV. Base-symbol comparison catches that while
  * tolerating TV's routing.
  */
-function baseSymbolsEqual(a, b) {
+export function baseSymbolsEqual(a, b) {
   if (!a || !b) return false;
   const base = s => {
     const upper = String(s).trim().toUpperCase();

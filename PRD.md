@@ -1,4 +1,5 @@
 # TradingView MCP — Dark Ice Enhancement PRD
+
 **Repo:** `darkiceinteractive/tradingview-mcp-darkice`
 **Upstream:** `LewisWJackson/tradingview-mcp-jackson`
 **Target runtime:** TradingView Desktop (macOS) via CDP port 9222
@@ -18,36 +19,39 @@ mark a section done until all criteria pass.
 
 ## 1. Current State Audit
 
-### 1.1 What Works
-| Tool | Status | Notes |
-|------|--------|-------|
-| `tv_health_check` | ✅ Working | Returns connection state quickly |
-| `tv_discover` | ✅ Working | Returns available API paths |
-| `chart_get_state` | ✅ Working | Reads from internal cached state, no live CDP data extraction |
-| `watchlist_get` | ⚠️ Partial | Returns empty when watchlist panel is closed; no panel-open fallback |
-| `watchlist_add` | ⚠️ Untested | Symbol rejection behaviour for numeric-prefix tickers unknown |
-| `ui_evaluate` | ✅ Working | JavaScript evaluation works when connection is stable |
+### 1.1 What Workslet
+
+| Tool                | Status        | Notes                                                                |
+| ------------------- | ------------- | -------------------------------------------------------------------- |
+| `tv_health_check` | ✅ Working    | Returns connection state quickly                                     |
+| `tv_discover`     | ✅ Working    | Returns available API paths                                          |
+| `chart_get_state` | ✅ Working    | Reads from internal cached state, no live CDP data extraction        |
+| `watchlist_get`   | ⚠️ Partial  | Returns empty when watchlist panel is closed; no panel-open fallback |
+| `watchlist_add`   | ⚠️ Untested | Symbol rejection behaviour for numeric-prefix tickers unknown        |
+| `ui_evaluate`     | ✅ Working    | JavaScript evaluation works when connection is stable                |
 
 ### 1.2 What Times Out (4-minute hang, no result)
-| Tool | Symptom |
-|------|---------|
-| `quote_get` | Hangs regardless of symbol param |
-| `data_get_study_values` | Hangs on every call |
-| `data_get_ohlcv` | Hangs with both `summary: true` and default params |
-| `batch_run` | Hangs with `get_ohlcv` action |
-| `tv_launch` | Hangs when TradingView is not already running |
-| `ui_open_panel` (watchlist) | Returns "Button not found" — wrong selector used |
+
+| Tool                          | Symptom                                              |
+| ----------------------------- | ---------------------------------------------------- |
+| `quote_get`                 | Hangs regardless of symbol param                     |
+| `data_get_study_values`     | Hangs on every call                                  |
+| `data_get_ohlcv`            | Hangs with both `summary: true` and default params |
+| `batch_run`                 | Hangs with `get_ohlcv` action                      |
+| `tv_launch`                 | Hangs when TradingView is not already running        |
+| `ui_open_panel` (watchlist) | Returns "Button not found" — wrong selector used    |
 
 ### 1.3 What's Missing Entirely
-| Tool | Required For |
-|------|-------------|
-| `watchlist_list` | Enumerate all watchlists by name + ID |
-| `watchlist_create` | Create a new named watchlist |
-| `watchlist_select` | Switch active watchlist by name or ID |
+
+| Tool                        | Required For                                 |
+| --------------------------- | -------------------------------------------- |
+| `watchlist_list`          | Enumerate all watchlists by name + ID        |
+| `watchlist_create`        | Create a new named watchlist                 |
+| `watchlist_select`        | Switch active watchlist by name or ID        |
 | `watchlist_remove_symbol` | Remove a single symbol from active watchlist |
-| `watchlist_delete` | Delete an entire watchlist |
-| `watchlist_set` | Idempotent UPSERT — set exact symbol list |
-| `watchlist_rename` | Rename an existing watchlist |
+| `watchlist_delete`        | Delete an entire watchlist                   |
+| `watchlist_set`           | Idempotent UPSERT — set exact symbol list   |
+| `watchlist_rename`        | Rename an existing watchlist                 |
 
 ---
 
@@ -86,12 +90,14 @@ export async function withTimeout<T>(
 ```
 
 **Configuration:**
+
 - Default timeout: **15 000 ms** for all data tools
 - Timeout should be configurable via env var `TV_MCP_TOOL_TIMEOUT_MS`
 - `tv_health_check`, `tv_discover`, `chart_get_state` are exempt (they have their own fast-fail logic)
 - `tv_launch` gets a separate **30 000 ms** timeout (app startup is slower)
 
 **Acceptance criteria:**
+
 - [ ] `quote_get` with no TradingView running returns error within 15s
 - [ ] Error message includes tool name, timeout duration, and remediation hint
 - [ ] Timeout value is logged at server startup
@@ -105,6 +111,7 @@ export async function withTimeout<T>(
 data extraction path, not three independent bugs.
 
 **Investigation tasks:**
+
 1. Find what `quote_get`, `data_get_study_values`, and `data_get_ohlcv` share in their call path that `chart_get_state` does NOT use. Candidates:
    - A shared CDP session object that was initialised once and never refreshed
    - A shared `Page` or `CDPSession` reference that goes stale after tab navigation
@@ -126,6 +133,7 @@ async function getActivePage(): Promise<Page> {
 ```
 
 **Acceptance criteria:**
+
 - [ ] `quote_get` returns a price for `ASX:CBA` within 15s with TV in foreground
 - [ ] `data_get_ohlcv` returns OHLCV data for the active chart within 15s
 - [ ] Root cause is documented in a comment in the relevant source file
@@ -161,6 +169,7 @@ similar — something that requires a live round-trip to the page but is guarant
 quickly if the data pipeline is working.
 
 **Acceptance criteria:**
+
 - [ ] `tv_health_check` returns `data_pipeline_healthy: true` when TV is in foreground
 - [ ] `tv_health_check` returns `data_pipeline_healthy: false` with a reason when TV is backgrounded or data tools are broken
 - [ ] Tier 2 check completes within 3s (it has its own sub-timeout)
@@ -194,6 +203,7 @@ async function withRetry<T>(
 ```
 
 **Acceptance criteria:**
+
 - [ ] If a data tool fails on first attempt, it re-attaches and retries once automatically
 - [ ] If retry also fails, error is surfaced to the caller (not another 4-min hang)
 - [ ] Re-attach attempt is logged clearly
@@ -221,6 +231,7 @@ async function withRetry<T>(
 ```
 
 **Acceptance criteria:**
+
 - [ ] `ui_open_panel({ action: 'open', panel: 'watchlist' })` succeeds and the watchlist body is populated
 - [ ] Calling it when already open is a no-op (idempotent)
 
@@ -234,11 +245,13 @@ async function withRetry<T>(
 it's awaiting a promise that never resolves (e.g. waiting for a port to be available with no timeout).
 
 **Fix:**
+
 - Apply the 30s timeout from Section 2.1
 - After spawning the process, poll `http://localhost:9222/json` every 500ms until it responds or timeout
 - If timeout is hit, surface a clear error: "TradingView did not start within 30s. Try launching it manually with --remote-debugging-port=9222"
 
 **Acceptance criteria:**
+
 - [ ] `tv_launch` either succeeds within 30s or fails with a clear error
 - [ ] Does not hang indefinitely under any circumstances
 
@@ -249,22 +262,26 @@ it's awaiting a promise that never resolves (e.g. waiting for a port to be avail
 After completing Section 2 (especially the shared dependency audit), verify each tool below.
 
 ### 3.1 `quote_get`
+
 - Should return bid/ask/last/volume for a given symbol
 - Test with: `ASX:CBA`, `ASX:BHP`
 - Must complete within 15s
 - If symbol not found, return a clear error (not a hang)
 
 ### 3.2 `data_get_ohlcv`
+
 - Should return OHLCV bar data for the active chart
 - Test with: `{ summary: true }` then `{ count: 5 }`
 - Must complete within 15s
 
 ### 3.3 `data_get_study_values`
+
 - Should return current indicator values from the data window
 - Test with no indicators applied (should return empty/zero values, not hang)
 - Must complete within 15s
 
 ### 3.4 `batch_run`
+
 - Should run an action across multiple timeframes
 - Test with: `{ action: 'get_ohlcv', symbols: ['ASX:CBA'], timeframes: ['1D'] }`
 - Must complete within 60s (batch has a higher timeout — individual tool timeout × number of calls)
@@ -302,6 +319,7 @@ cookie from the TradingView tab session to make authenticated API calls.
 **Fallback approach: UI automation via CDP JavaScript evaluation**
 
 If the REST API approach is not viable (auth is too complex, endpoints are undocumented):
+
 - Drive all watchlist operations via `Runtime.evaluate` in the TV tab
 - Use the React fiber tree to read data
 - Use DOM button clicks + keyboard events to create/rename/delete
@@ -331,6 +349,7 @@ document.querySelector('[data-name="watchlists-button"]')
 
 **IMPORTANT:** CSS class names like `__KRxuOy`, `mQBvegEO` are CSS modules hashes and WILL
 change between TradingView versions. Do not hardcode them. Instead:
+
 - Use stable selectors: `data-name`, `aria-label`, `role` attributes
 - Use structural selectors: `.widgetHeader-*`, `.widgetbar-widget-watchlist`
 - Detect the actual class names at runtime by querying known stable ancestors
@@ -340,12 +359,15 @@ change between TradingView versions. Do not hardcode them. Instead:
 ### 4.3 Tool Specifications
 
 #### `watchlist_list`
+
 ```
 Returns all watchlists (public and private) with their IDs, names, and symbol counts.
 ```
+
 **Parameters:** none
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -359,6 +381,7 @@ Returns all watchlists (public and private) with their IDs, names, and symbol co
 ```
 
 **Implementation notes:**
+
 - Click the `[data-name="watchlists-button"]` dropdown and read the rendered list items
 - Or use REST API if available
 - Must ensure watchlist panel is open before attempting (auto-open if closed)
@@ -366,14 +389,18 @@ Returns all watchlists (public and private) with their IDs, names, and symbol co
 ---
 
 #### `watchlist_select`
+
 ```
 Switches the active watchlist by name or ID.
 ```
+
 **Parameters:**
+
 - `name: string` — exact watchlist name (case-sensitive) OR
 - `id: string` — watchlist ID
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -383,20 +410,25 @@ Switches the active watchlist by name or ID.
 ```
 
 **Error cases:**
+
 - Watchlist not found → `{ success: false, error: "Watchlist 'XYZ' not found. Available: [...]" }`
 
 ---
 
 #### `watchlist_get` (fix existing)
+
 ```
 Returns all symbols in the currently active watchlist.
 ```
+
 **Fix required:**
+
 - Currently returns empty when panel is closed
 - Must auto-open the panel if closed, then read symbols
 - Return the watchlist name alongside the symbols
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -410,15 +442,19 @@ Returns all symbols in the currently active watchlist.
 ---
 
 #### `watchlist_create`
+
 ```
 Creates a new empty watchlist with the given name and optionally populates it with symbols.
 ```
+
 **Parameters:**
+
 - `name: string` — exact name to use (case-sensitive, no transformation)
 - `symbols?: string[]` — optional initial symbol list
 - `type?: 'public' | 'private'` — default `'public'`
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -430,9 +466,11 @@ Creates a new empty watchlist with the given name and optionally populates it wi
 ```
 
 **Error cases:**
+
 - Name already exists → `{ success: false, error: "Watchlist 'ASX_BANKS_FINANCIALS' already exists. Use watchlist_set to update it." }`
 
 **Implementation notes:**
+
 - Use the "+" / "New watchlist" button in the watchlist dropdown UI
 - After creation, rename it to the exact target name
 - Then add symbols one by one via `watchlist_add` (or batch via REST)
@@ -440,20 +478,25 @@ Creates a new empty watchlist with the given name and optionally populates it wi
 ---
 
 #### `watchlist_add` (audit + harden existing)
+
 ```
 Adds one or more symbols to the currently active watchlist.
 ```
+
 **Current issues to fix:**
+
 - Unknown behaviour when symbol has leading digit (e.g. `ASX:29M`, `ASX:360`, `ASX:5GG`)
 - Unknown behaviour when symbol already exists in list (should be idempotent, not duplicate)
 - No clear error when symbol is rejected by TV
 
 **Fix:**
+
 - Accept `symbol: string` (single) OR `symbols: string[]` (batch)
 - Return per-symbol result including rejected symbols with reason
 - Detect duplicates before adding (read current list, skip if already present)
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -466,13 +509,17 @@ Adds one or more symbols to the currently active watchlist.
 ---
 
 #### `watchlist_remove_symbol`
+
 ```
 Removes one or more symbols from the currently active watchlist.
 ```
+
 **Parameters:**
+
 - `symbol: string` OR `symbols: string[]`
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -482,6 +529,7 @@ Removes one or more symbols from the currently active watchlist.
 ```
 
 **Implementation notes:**
+
 - Right-click on symbol row → "Remove from watchlist" context menu, OR
 - Use REST API DELETE if available, OR
 - Delete entire watchlist and recreate without the removed symbols (last resort — note this in response)
@@ -489,15 +537,19 @@ Removes one or more symbols from the currently active watchlist.
 ---
 
 #### `watchlist_delete`
+
 ```
 Deletes an entire watchlist by name or ID.
 ```
+
 **Parameters:**
+
 - `name: string` OR `id: string`
 
 **Safety check:** Refuse to delete if name does not match any watchlist (no fuzzy matching).
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -508,14 +560,18 @@ Deletes an entire watchlist by name or ID.
 ---
 
 #### `watchlist_rename`
+
 ```
 Renames a watchlist.
 ```
+
 **Parameters:**
+
 - `name: string` — current name
 - `new_name: string` — target name
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -527,17 +583,21 @@ Renames a watchlist.
 ---
 
 #### `watchlist_set` (new — the UPSERT workhorse)
+
 ```
 Idempotent UPSERT: sets the exact symbol list for a watchlist.
 Creates the watchlist if it doesn't exist. Adds missing symbols and removes extras.
 Safe to re-run — produces the same result regardless of starting state.
 ```
+
 **Parameters:**
+
 - `name: string` — watchlist name (case-sensitive, created if missing)
 - `symbols: string[]` — exact desired symbol list (order not guaranteed)
 - `type?: 'public' | 'private'` — only used on creation, default `'public'`
 
 **Returns:**
+
 ```json
 {
   "success": true,
@@ -551,6 +611,7 @@ Safe to re-run — produces the same result regardless of starting state.
 ```
 
 **Algorithm:**
+
 ```
 1. GET all watchlists via watchlist_list
 2. IF name not found:
@@ -572,12 +633,14 @@ Safe to re-run — produces the same result regardless of starting state.
 
 **ASX prefix:** All symbols in the 24-watchlist source-of-truth use `ASX:` prefix.
 The tools must accept symbols both with and without the prefix and normalise:
+
 - `CBA` → `ASX:CBA`  (if the watchlist context implies ASX — document this behaviour)
 - `ASX:CBA` → `ASX:CBA` (pass-through)
 - Do not auto-prefix non-ASX symbols (user passes `NASDAQ:AAPL`, keep it as-is)
 
 **Numeric-prefix tickers:** `ASX:29M`, `ASX:360`, `ASX:5GG` may fail in TradingView's symbol
 lookup. Test each of these. If they fail:
+
 - Log the rejection with the TradingView error message
 - Continue with remaining symbols (do not abort the batch)
 - Report rejected symbols in the tool response
@@ -621,6 +684,7 @@ After implementation, run the following sequence and verify each step:
 ### 5.2 The 24-Watchlist UPSERT Test
 
 Once all tools pass the manual test script, run the full 24-watchlist UPSERT:
+
 - Call `watchlist_set` for each of the 24 lists defined in the task specification
 - Verify via `watchlist_list` + `watchlist_get` that all 24 exist with correct symbol counts
 - Document any rejected symbols (especially `29M`, `360`, `5GG`)
@@ -678,6 +742,7 @@ tools in their own module/directory.
 ## 8. Delivery
 
 On completion, the following should be true:
+
 1. All tools in Section 1.2 (timeouts) now complete within 15s or return a clear error
 2. `tv_health_check` returns `data_pipeline_healthy` field
 3. All 8 new watchlist tools are implemented, registered in the MCP manifest, and passing the manual test script

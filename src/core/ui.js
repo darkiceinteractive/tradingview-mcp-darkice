@@ -313,14 +313,14 @@ export async function scroll({ direction, amount }) {
 export async function mouseClick({ x, y, button, double_click }) {
   const c = await getClient();
   const btn = button === 'right' ? 'right' : button === 'middle' ? 'middle' : 'left';
-  const btnNum = btn === 'right' ? 2 : btn === 'middle' ? 1 : 0;
+  const btnNum = btn === 'right' ? 2 : btn === 'middle' ? 4 : 1;
   await c.Input.dispatchMouseEvent({ type: 'mouseMoved', x, y });
   await c.Input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: btn, buttons: btnNum, clickCount: 1 });
-  await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn });
+  await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn, buttons: 0, clickCount: 1 });
   if (double_click) {
     await new Promise(r => setTimeout(r, 50));
     await c.Input.dispatchMouseEvent({ type: 'mousePressed', x, y, button: btn, buttons: btnNum, clickCount: 2 });
-    await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn });
+    await c.Input.dispatchMouseEvent({ type: 'mouseReleased', x, y, button: btn, buttons: 0, clickCount: 2 });
   }
   return { success: true, x, y, button: btn, double_click: !!double_click };
 }
